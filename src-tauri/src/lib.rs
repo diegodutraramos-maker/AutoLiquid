@@ -13,6 +13,21 @@ pub fn run() {
                 )?;
             }
 
+            // macOS: remove atributo de quarentena do sidecar para que o Gatekeeper
+            // não bloqueie a execução do binário Python em apps não assinados.
+            #[cfg(target_os = "macos")]
+            {
+                if let Ok(exe) = std::env::current_exe() {
+                    if let Some(dir) = exe.parent() {
+                        let sidecar_path = dir.join("api");
+                        let _ = std::process::Command::new("xattr")
+                            .args(["-d", "com.apple.quarantine",
+                                   sidecar_path.to_str().unwrap_or("")])
+                            .status();
+                    }
+                }
+            }
+
             // Inicia o backend Python (api) como sidecar
             let shell = app.shell();
             let _sidecar = shell
