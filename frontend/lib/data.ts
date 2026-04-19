@@ -68,6 +68,20 @@ export interface EtapaExecucao {
   icone: string
 }
 
+export interface PendenciaDocumento {
+  id: string
+  tipo: "bloqueio" | "divergencia" | "atencao"
+  titulo: string
+  descricao: string
+  origem?: "pdf" | "portal" | "configuracao" | "automacao"
+}
+
+export interface StatusGeralDocumento {
+  tipo: "pronto" | "atencao" | "bloqueado" | "em_execucao"
+  titulo: string
+  descricao: string
+}
+
 export type TableKey =
   | "contratos"
   | "vpd"
@@ -117,6 +131,8 @@ export interface DocumentoProcessado {
   empenhos: Empenho[]
   deducoes: Deducao[]
   etapas: EtapaExecucao[]
+  pendencias: PendenciaDocumento[]
+  statusGeral: StatusGeralDocumento
   logs: string[]
   logsSimples: string[]
   isRunning: boolean
@@ -131,6 +147,22 @@ export interface StopExecutionResponse extends DocumentoProcessado {
 export interface BackendStatus {
   chromeStatus: ChromeStatus
   chromePorta: number
+}
+
+export type BackendStartupPhase =
+  | "booting-ui"
+  | "starting-api"
+  | "restoring-data"
+  | "ready"
+  | "error"
+
+export interface BackendStartupProgress {
+  phase: BackendStartupPhase
+  title: string
+  detail: string
+  progress: number
+  attempt: number
+  elapsedMs: number
 }
 
 export interface OpenChromeResponse {
@@ -182,7 +214,7 @@ interface ApiFetchOptions {
   signal?: AbortSignal
 }
 
-const delay = (ms: number) =>
+export const delay = (ms: number) =>
   new Promise<void>((resolve) => {
     setTimeout(resolve, ms)
   })
@@ -280,14 +312,58 @@ export async function waitForBackendReady(
   {
     timeoutMs = DEFAULT_API_STARTUP_TIMEOUT_MS,
     retryDelayMs = DEFAULT_API_STARTUP_RETRY_MS,
-  }: { timeoutMs?: number; retryDelayMs?: number } = {}
+    onProgress,
+  }: {
+    timeoutMs?: number
+    retryDelayMs?: number
+    onProgress?: (progress: BackendStartupProgress) => void
+  } = {}
 ): Promise<BackendStatus> {
   const deadline = Date.now() + timeoutMs
+  const startedAt = Date.now()
   let lastError: unknown
+  let attempt = 0
+
+  onProgress?.({
+    phase: "starting-api",
+    title: "Iniciando API interna",
+    detail: "Preparando os serviços locais do AutoLiquid...",
+    progress: 18,
+    attempt,
+    elapsedMs: 0,
+  })
 
   while (Date.now() <= deadline) {
+    attempt += 1
+    const elapsedMs = Date.now() - startedAt
+    const progress = Math.min(
+      82,
+      22 + Math.round((elapsedMs / Math.max(timeoutMs, 1)) * 54)
+    )
+
+    onProgress?.({
+      phase: "starting-api",
+      title: "Conectando ao backend interno",
+      detail:
+        attempt === 1
+          ? "Abrindo a API local pela primeira vez..."
+          : `Tentativa ${attempt}: aguardando resposta em ${API_BASE_URL}.`,
+      progress,
+      attempt,
+      elapsedMs,
+    })
+
     try {
-      return await fetchBackendStatus()
+      const status = await fetchBackendStatus()
+      onProgress?.({
+        phase: "starting-api",
+        title: "API conectada",
+        detail: "Conexao com o backend interno estabelecida.",
+        progress: 86,
+        attempt,
+        elapsedMs: Date.now() - startedAt,
+      })
+      return status
     } catch (error) {
       lastError = error
       if (Date.now() + retryDelayMs > deadline) {

@@ -5,6 +5,7 @@ import { GlassButton } from "./glass-card";
 
 interface HeaderProps {
   chromeStatus?: "pronto" | "carregando" | "erro";
+  browserName?: string;
   onOpenTabelas?: () => void;
   onOpenFilaTrabalho?: () => void;
   onOpenConfiguracoes?: () => void;
@@ -14,6 +15,7 @@ interface HeaderProps {
 
 export function Header({
   chromeStatus = "pronto",
+  browserName = "Chrome",
   onOpenTabelas,
   onOpenFilaTrabalho,
   onOpenConfiguracoes,
@@ -27,9 +29,9 @@ export function Header({
   };
 
   const statusText = {
-    pronto: "Chrome disponível",
-    carregando: "Verificando Chrome...",
-    erro: "Chrome indisponível",
+    pronto: `${browserName} disponível`,
+    carregando: `Verificando ${browserName}...`,
+    erro: `${browserName} indisponível`,
   };
 
   return (
@@ -72,7 +74,7 @@ export function Header({
             disabled={!onOpenChrome || chromeActionDisabled}
             title={
               onOpenChrome
-                ? "Abrir ou reconectar o Chrome na página inicial da automação"
+                ? `Abrir ou reconectar o ${browserName} na página inicial da automação`
                 : "Ação indisponível nesta tela"
             }
           >

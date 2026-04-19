@@ -150,11 +150,11 @@ pub fn run() {
             let api_addr: SocketAddr = "127.0.0.1:8000"
                 .parse()
                 .expect("endereco local da API invalido");
-            if wait_for_local_port(api_addr, Duration::from_secs(15)) {
+            if wait_for_local_port(api_addr, Duration::from_secs(2)) {
                 log::info!("API interna pronta em http://127.0.0.1:8000");
             } else {
-                log::error!(
-                    "A API interna nao abriu a porta 8000 dentro do tempo esperado. A UI seguira aberta para exibir o erro de conexao."
+                log::warn!(
+                    "A API interna segue iniciando em segundo plano. A UI abrira a tela de carregamento e continuara aguardando a conexao."
                 );
             }
 

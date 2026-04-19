@@ -8,6 +8,8 @@ import { Header } from "@/components/header";
 import { DocumentoPanel } from "@/components/documento-panel";
 import { NotasFiscaisTable } from "@/components/notas-fiscais-table";
 import { FilaExecucao } from "@/components/fila-execucao";
+import { PendenciasPanel } from "@/components/pendencias-panel";
+import { StatusOverview } from "@/components/status-overview";
 import { TabelasModal } from "@/components/tabelas-modal";
 import { ConfiguracoesModal } from "@/components/configuracoes-modal";
 import { GlassButton } from "@/components/glass-card";
@@ -40,6 +42,7 @@ import {
   fetchBackendStatus,
   fetchDocumentoProcessado,
   fetchAppSettings,
+  obterVersao,
   openChromeSession,
   pararExecucao,
   waitForBackendReady,
@@ -47,10 +50,12 @@ import {
   type Deducao,
   type DocumentoProcessado,
   type Empenho,
+  type PendenciaDocumento,
   type ResumoFinanceiro,
   type NotaFiscal,
   type EtapaExecucao,
   type ProcessDates,
+  type StatusGeralDocumento,
   type TableKey,
   executarTodas,
   executarEtapa,
@@ -92,6 +97,15 @@ function ConferenciaPageContent() {
   const [erro, setErro] = useState("");
   const [statusMensagem, setStatusMensagem] = useState("");
   const [chromeStatus, setChromeStatus] = useState<"pronto" | "carregando" | "erro">("carregando");
+  const [apiStatus, setApiStatus] = useState<"conectada" | "carregando" | "erro">("carregando");
+  const [browserName, setBrowserName] = useState("Chrome");
+  const [appVersion, setAppVersion] = useState("");
+  const [pendencias, setPendencias] = useState<PendenciaDocumento[]>([]);
+  const [statusGeral, setStatusGeral] = useState<StatusGeralDocumento>({
+    tipo: "atencao",
+    titulo: "Carregando documento",
+    descricao: "O resumo operacional do documento será exibido em instantes.",
+  });
   const [avisoManual, setAvisoManual] = useState("");
   const [abrindoChrome, setAbrindoChrome] = useState(false);
   const [lfNumero, setLfNumero] = useState("");
@@ -140,6 +154,14 @@ function ConferenciaPageContent() {
     setDates(payload.dates);
     setLogs(payload.logs);
     setLogsSimples(payload.logsSimples ?? []);
+    setPendencias(payload.pendencias ?? []);
+    setStatusGeral(
+      payload.statusGeral ?? {
+        tipo: "atencao",
+        titulo: "Resumo indisponível",
+        descricao: "Não foi possível montar o resumo operacional deste documento.",
+      }
+    );
     setLfNumero(payload.lfNumero ?? "");
     setUgrNumero(payload.ugrNumero ?? "");
     setVencimentoDocumento(payload.vencimentoDocumento ?? "");
@@ -215,10 +237,12 @@ function ConferenciaPageContent() {
         const status = await fetchBackendStatus();
         if (!ativo) return;
         setChromeStatus(status.chromeStatus);
+        setApiStatus("conectada");
       } catch (error) {
         if (!ativo) return;
         console.error("Erro ao consultar status do Chrome:", error);
         setChromeStatus("erro");
+        setApiStatus("erro");
       }
     };
 
@@ -232,16 +256,19 @@ function ConferenciaPageContent() {
         const status = await waitForBackendReady();
         if (!ativo) return;
         setChromeStatus(status.chromeStatus);
+        setApiStatus("conectada");
       } catch (error) {
         console.error("Erro ao consultar status do Chrome:", error);
         if (ativo) {
           setChromeStatus("erro");
+          setApiStatus("erro");
         }
       }
 
-      const [payloadResult, settingsResult] = await Promise.allSettled([
+      const [payloadResult, settingsResult, versaoResult] = await Promise.allSettled([
         fetchDocumentoProcessado(documentoId),
         fetchAppSettings(),
+        obterVersao(),
       ]);
 
       if (payloadResult.status === "fulfilled") {
@@ -261,6 +288,10 @@ function ConferenciaPageContent() {
 
       if (settingsResult.status === "fulfilled" && ativo) {
         setNivelLog(settingsResult.value.nivelLog ?? "desenvolvedor");
+        setBrowserName(settingsResult.value.navegador === "edge" ? "Edge" : "Chrome");
+      }
+      if (versaoResult.status === "fulfilled" && ativo) {
+        setAppVersion(versaoResult.value.versao ?? "");
       }
     };
 
@@ -712,6 +743,7 @@ function ConferenciaPageContent() {
 
       <Header
         chromeStatus={chromeStatus}
+        browserName={browserName}
         onOpenTabelas={() => {
           setTabelasInitialTab("contratos");
           setTabelasVisibleTabs(undefined);
@@ -744,6 +776,20 @@ function ConferenciaPageContent() {
             {erro}
           </div>
         )}
+
+        <div className="mb-6">
+          <StatusOverview
+            statusGeral={statusGeral}
+            apiStatus={apiStatus}
+            chromeStatus={chromeStatus}
+            browserName={browserName}
+            appVersion={appVersion}
+          />
+        </div>
+
+        <div className="mb-6">
+          <PendenciasPanel pendencias={pendencias} />
+        </div>
 
         {/* Main Grid Layout */}
         <div className="grid gap-6 lg:grid-cols-[280px_1fr_320px]">
@@ -817,6 +863,9 @@ function ConferenciaPageContent() {
             setChromeStatus(status.chromeStatus);
           } catch {
             setChromeStatus("erro");
+          }
+          if (saved?.navegador) {
+            setBrowserName(saved.navegador === "edge" ? "Edge" : "Chrome");
           }
           if (saved?.nivelLog) {
             setNivelLog(saved.nivelLog);

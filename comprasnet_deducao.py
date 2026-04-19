@@ -897,6 +897,20 @@ def _read_input_value(pagina, fid: str) -> str:
         return ""
 
 
+def _valor_campo_equivalente(atual: str, esperado: str, tolerancia: float = 0.01) -> bool:
+    atual_txt = str(atual or "").strip()
+    esperado_txt = str(esperado or "").strip()
+    if atual_txt == esperado_txt:
+        return True
+
+    try:
+        atual_num = float(normalizar_valor(atual_txt or "0") or "0")
+        esperado_num = float(normalizar_valor(esperado_txt or "0") or "0")
+        return abs(atual_num - esperado_num) <= tolerancia
+    except Exception:
+        return False
+
+
 def _assert_datas_preenchidas(pagina, did: str, data_ddmmaaaa: str, erros: list) -> bool:
     """Verifica se as datas de vencimento e pagamento foram preenchidas corretamente.
     Aceita tanto o formato ISO (2026-04-16) quanto DD/MM/AAAA (16/04/2026).
@@ -2358,6 +2372,94 @@ def _preencher_predoc_darf(
     return obs_ok
 
 
+def _revalidar_ddr001_antes_confirmar(
+    pagina,
+    did: str,
+    nf: dict,
+    cod_mun: str,
+    nome_mun: str,
+    cod_receita: str,
+    iss_br: str,
+    rid_pre: str,
+    pdid_pre: str,
+    erros: list,
+) -> None:
+    """Reaplica campos críticos do DDR001 quando o portal reseta algo no fim.
+
+    O problema aparece com mais frequência a partir da 4ª NF, quando o DOM fica
+    mais pesado e alguns AJAX tardios limpam parcialmente campos já preenchidos.
+    """
+    try:
+        ug_id = f"sfdeducaocodugpgto{did}"
+        if _read_input_value(pagina, ug_id) != _UG_TOMADORA:
+            print(f"    [Revalidacao DDR001] UG divergente em {ug_id} — repreenchendo.")
+            _fill(pagina, ug_id, _UG_TOMADORA, erros, "UG Pagadora na revalidacao")
+    except Exception as e:
+        erros.append(f"Revalidacao DDR001/UG Pagadora: {e}")
+
+    try:
+        valor_id = f"sfdeducaovlr{did}"
+        if not _valor_campo_equivalente(_read_input_value(pagina, valor_id), iss_br):
+            print(f"    [Revalidacao DDR001] Valor do Item divergente em {valor_id} — repreenchendo.")
+            _fill_money(pagina, valor_id, iss_br, erros, "Valor do Item na revalidacao")
+    except Exception as e:
+        erros.append(f"Revalidacao DDR001/Valor do Item: {e}")
+
+    try:
+        receita_id = f"txtinscrb{did}"
+        if cod_receita and _read_input_value(pagina, receita_id).strip() != str(cod_receita).strip():
+            print(f"    [Revalidacao DDR001] Codigo de Receita divergente em {receita_id} — repreenchendo.")
+            _fill(pagina, receita_id, cod_receita, erros, "Codigo de Receita na revalidacao")
+    except Exception as e:
+        erros.append(f"Revalidacao DDR001/Codigo de Receita: {e}")
+
+    try:
+        rid = rid_pre or _obter_rid(pagina, did)
+        if rid:
+            receita_recolh_id = f"vlrPrincipal{did}{rid}"
+            if not _valor_campo_equivalente(_read_input_value(pagina, receita_recolh_id), iss_br):
+                print(
+                    f"    [Revalidacao DDR001] Valor da Receita divergente em {receita_recolh_id} — repreenchendo."
+                )
+                _fill_money(
+                    pagina,
+                    receita_recolh_id,
+                    iss_br,
+                    erros,
+                    "Valor da Receita na revalidacao",
+                )
+    except Exception as e:
+        erros.append(f"Revalidacao DDR001/Recolhedor: {e}")
+
+    try:
+        pdid = pdid_pre or _obter_pdid_do_did(pagina, did, apenas_visiveis=True)
+        if pdid:
+            num_nf = str(
+                nf.get("Número da Nota", "")
+                or nf.get("Numero da Nota", "")
+                or ""
+            ).strip()
+            valor_nf = _formatar_valor_br(nf.get("Valor", "0"))
+            nf_id = f"sfpredocnumnf{pdid}"
+            valor_nf_id = f"sfpredocvlrnf{pdid}"
+
+            if num_nf and _read_input_value(pagina, nf_id).strip() != num_nf:
+                print(f"    [Revalidacao DDR001] Numero da NF divergente em {nf_id} — repreenchendo.")
+                _fill(pagina, nf_id, num_nf, erros, "Pre-Doc/NF na revalidacao")
+
+            if not _valor_campo_equivalente(_read_input_value(pagina, valor_nf_id), valor_nf):
+                print(f"    [Revalidacao DDR001] Valor da NF divergente em {valor_nf_id} — repreenchendo.")
+                _fill_money(
+                    pagina,
+                    valor_nf_id,
+                    valor_nf,
+                    erros,
+                    "Pre-Doc/Valor NF na revalidacao",
+                )
+    except Exception as e:
+        erros.append(f"Revalidacao DDR001/Pre-Doc: {e}")
+
+
 def _preencher_ddr001_nf(pagina, nf: dict, idx: int, total: int,
                           cod_mun: str, nome_mun: str, cod_receita: str,
                           data_venc: str, recurso: str, aliquota_pct: float,
@@ -2369,6 +2471,7 @@ def _preencher_ddr001_nf(pagina, nf: dict, idx: int, total: int,
     num_nf  = nf.get('NÃºmero da Nota', '')
     print(f"  â†’ DDR001 NF {num_nf} [{idx+1}/{total}]  ISS={iss_br}  Venc={data_venc}")
     _verificar_interrupcao(deve_parar)
+    _garantir_sem_deducao_em_edicao(pagina, timeout_ms=15000)
 
     # â"€â"€ 1. Cria nova deduÃ§Ã£o â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
     did = _clicar_nova_deducao(pagina)
@@ -2533,6 +2636,19 @@ def _preencher_ddr001_nf(pagina, nf: dict, idx: int, total: int,
             )
     except Exception as e:
         erros.append(f"RevalidaÃ§Ã£o do CÃ³digo do MunicÃ­pio: {e}")
+
+    _revalidar_ddr001_antes_confirmar(
+        pagina,
+        did,
+        nf,
+        cod_mun,
+        nome_mun,
+        cod_receita,
+        iss_br,
+        rid_expandido,
+        predoc_pdid_pre,
+        erros,
+    )
 
     _verificar_interrupcao(deve_parar)
     # ── 13. Confirmar (atômico: seta datas + clica no mesmo tick JS) ─────────
@@ -2937,7 +3053,19 @@ def _aguardar_portal_limpo_entre_tipos(pagina, timeout_ms: int = 20000) -> None:
         print("    [Transição] Portal limpo ✓")
     except Exception as e:
         log.warning("[Transição] Portal não ficou limpo em %dms: %s", timeout_ms, e)
-        print(f"    [Transição] Aviso: portal não confirmou limpeza em {timeout_ms}ms — continuando.")
+        print(f"    [Transição] Aviso: portal não confirmou limpeza em {timeout_ms}ms — tentando recuperação.")
+        _garantir_sem_deducao_em_edicao(pagina, timeout_ms=15000)
+        pagina.wait_for_function(
+            """() => {
+                const visivel = (el) =>
+                    !!el && (!!el.offsetParent || el.getClientRects().length > 0);
+                const overlay = document.querySelector('#nova-aba-situacao-deducao .overlay');
+                const btnNova = document.getElementById('nova-aba-situacao-deducao');
+                return (!overlay || !visivel(overlay)) && visivel(btnNova);
+            }""",
+            timeout=15000,
+        )
+        print("    [Transição] Portal recuperado após espera extra ✓")
 
     # Buffer extra para AJAX residual (animações, re-render do portal)
     time.sleep(1.5)

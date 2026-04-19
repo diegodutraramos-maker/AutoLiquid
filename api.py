@@ -10,6 +10,7 @@ import shutil
 import sys
 import tempfile
 import inspect
+import unicodedata
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -283,6 +284,160 @@ def _gerar_logs_etapa_sucesso(dados: dict, etapa_id: int, venc: str = "") -> lis
 
     return msgs
 
+
+def _normalizar_texto_status(valor: str) -> str:
+    return (
+        unicodedata.normalize("NFD", str(valor or ""))
+        .encode("ascii", "ignore")
+        .decode("ascii")
+        .lower()
+        .strip()
+    )
+
+
+def _montar_pendencias_documento(
+    dados: dict,
+    dados_extraidos: dict,
+    deducoes: list[dict[str, Any]],
+    etapas: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    pendencias: list[dict[str, str]] = []
+    vistos: set[tuple[str, str]] = set()
+
+    def adicionar(tipo: str, titulo: str, descricao: str, origem: str = "automacao") -> None:
+        chave = (tipo, titulo.strip())
+        if not titulo.strip() or chave in vistos:
+            return
+        vistos.add(chave)
+        pendencias.append(
+            {
+                "id": f"{tipo}-{len(pendencias) + 1}",
+                "tipo": tipo,
+                "titulo": titulo.strip(),
+                "descricao": descricao.strip(),
+                "origem": origem,
+            }
+        )
+
+    if dados.get("requires_centro_custo") and not str(dados.get("ugr_numero", "") or "").strip():
+        adicionar(
+            "bloqueio",
+            "UGR obrigatória para seguir",
+            "O documento exige centro de custo, mas a UGR ainda não foi informada.",
+            "configuracao",
+        )
+
+    if any(str(ded.get("siafi", "") or "") == "DOB001" for ded in deducoes) and not str(
+        dados.get("lf_numero", "") or ""
+    ).strip():
+        adicionar(
+            "bloqueio",
+            "LF obrigatória para a OB",
+            "Há dedução DOB001 no documento e o número da LF ainda não foi preenchido.",
+            "configuracao",
+        )
+
+    for etapa in etapas:
+        if str(etapa.get("status", "") or "") == "erro":
+            adicionar(
+                "bloqueio",
+                f"Etapa com erro: {etapa.get('nome', 'Automação')}",
+                "A automação registrou erro nesta etapa e precisa de revisão antes de prosseguir.",
+                "automacao",
+            )
+
+    for ded in deducoes:
+        if str(ded.get("status", "") or "") == "erro":
+            rotulo = str(ded.get("siafi", "") or ded.get("tipo", "") or "Dedução").strip()
+            adicionar(
+                "bloqueio",
+                f"Dedução com erro: {rotulo}",
+                "Uma dedução falhou durante a execução e deve ser refeita ou conferida manualmente.",
+                "automacao",
+            )
+
+    for alerta in dados.get("alertas", []) or []:
+        alerta_txt = str(alerta or "").strip()
+        if alerta_txt:
+            adicionar(
+                "atencao",
+                "Atenção na análise inicial",
+                alerta_txt,
+                "pdf",
+            )
+
+    mensagens = [*dados.get("logs", []), *dados.get("logs_simples", [])]
+    for mensagem in mensagens:
+        mensagem_txt = str(mensagem or "").strip()
+        mensagem_norm = _normalizar_texto_status(mensagem_txt)
+        if not mensagem_txt:
+            continue
+        if "requer conferencia manual" in mensagem_norm:
+            adicionar(
+                "divergencia",
+                "Conferência manual necessária",
+                mensagem_txt,
+                "portal",
+            )
+        elif "diverg" in mensagem_norm:
+            adicionar(
+                "divergencia",
+                "Divergência detectada",
+                mensagem_txt,
+                "portal",
+            )
+
+    notas = dados_extraidos.get("Notas Fiscais", []) or []
+    if len(notas) > 1:
+        adicionar(
+            "atencao",
+            "Documento com múltiplas notas fiscais",
+            f"Foram identificadas {len(notas)} notas fiscais no PDF. Vale conferir se o portal refletiu todas elas corretamente.",
+            "pdf",
+        )
+
+    return pendencias
+
+
+def _montar_status_geral(
+    dados: dict,
+    pendencias: list[dict[str, str]],
+) -> dict[str, str]:
+    if bool(dados.get("is_running", False)):
+        return {
+            "tipo": "em_execucao",
+            "titulo": "Automação em andamento",
+            "descricao": "O AutoLiquid está executando etapas neste documento agora.",
+        }
+
+    bloqueios = [item for item in pendencias if item.get("tipo") == "bloqueio"]
+    divergencias = [item for item in pendencias if item.get("tipo") == "divergencia"]
+    atencoes = [item for item in pendencias if item.get("tipo") == "atencao"]
+
+    if bloqueios:
+        return {
+            "tipo": "bloqueado",
+            "titulo": "Documento com bloqueios",
+            "descricao": f"{len(bloqueios)} item(ns) exigem ação antes de seguir com segurança.",
+        }
+    if divergencias:
+        return {
+            "tipo": "atencao",
+            "titulo": "Documento com divergências",
+            "descricao": f"{len(divergencias)} divergência(s) foram detectadas e devem ser conferidas.",
+        }
+    if atencoes:
+        return {
+            "tipo": "atencao",
+            "titulo": "Documento com atenções",
+            "descricao": f"{len(atencoes)} observação(ões) merecem revisão, embora não bloqueiem a execução.",
+        }
+    return {
+        "tipo": "pronto",
+        "titulo": "Documento pronto para execução",
+        "descricao": "Nenhum bloqueio ou divergência relevante foi identificado até aqui.",
+    }
+
 def _montar_documento_processado(doc_id: str, dados: dict) -> dict[str, Any]:
     """Converte o estado interno de um documento para a resposta da API."""
     d = dados.get("dados_extraidos", {})
@@ -351,6 +506,10 @@ def _montar_documento_processado(doc_id: str, dados: dict) -> dict[str, Any]:
         sit_raw = empenhos_raw[0].get("Situação", "")
         tipo_liquidacao = extrair_siafi_completo(sit_raw) or extrair_codigo_situacao(sit_raw)
 
+    etapas = deepcopy(dados.get("etapas", ETAPAS_BASE))
+    pendencias = _montar_pendencias_documento(dados, d, deducoes, etapas)
+    status_geral = _montar_status_geral(dados, pendencias)
+
     return {
         "id": doc_id,
         "lfNumero": dados.get("lf_numero", ""),
@@ -381,7 +540,9 @@ def _montar_documento_processado(doc_id: str, dados: dict) -> dict[str, Any]:
         "notasFiscais": notas,
         "empenhos": empenhos,
         "deducoes": deducoes,
-        "etapas": deepcopy(dados.get("etapas", ETAPAS_BASE)),
+        "etapas": etapas,
+        "pendencias": pendencias,
+        "statusGeral": status_geral,
         "logs": dados.get("logs", []),
         "logsSimples": dados.get("logs_simples", []),
         "isRunning": dados.get("is_running", False),

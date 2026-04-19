@@ -4,14 +4,18 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowDownToLine, FileUp, Loader2, X } from "lucide-react";
 import { Header } from "@/components/header";
+import { StartupScreen } from "@/components/startup-screen";
 import { DateFields } from "@/components/date-fields";
 import { UploadZone } from "@/components/upload-zone";
 import { TabelasModal } from "@/components/tabelas-modal";
 import { ConfiguracoesModal } from "@/components/configuracoes-modal";
 import { GlassButton } from "@/components/glass-card";
 import {
+  delay,
+  type BackendStartupProgress,
   MOCK_PROCESS_DATES,
   fetchBackendStatus,
+  fetchAppSettings,
   fetchProcessDates,
   openChromeSession,
   waitForBackendReady,
@@ -21,6 +25,15 @@ import {
   type VersaoInfo,
   uploadPDF,
 } from "@/lib/data";
+
+const INITIAL_STARTUP_STATE: BackendStartupProgress = {
+  phase: "booting-ui",
+  title: "Preparando AutoLiquid",
+  detail: "Carregando a interface inicial do aplicativo...",
+  progress: 12,
+  attempt: 0,
+  elapsedMs: 0,
+};
 
 export default function HomePage() {
   const router = useRouter();
@@ -37,9 +50,19 @@ export default function HomePage() {
   const [chromeStatus, setChromeStatus] = useState<"pronto" | "carregando" | "erro">("carregando");
   const [abrindoChrome, setAbrindoChrome] = useState(false);
   const [bannerUpdate, setBannerUpdate] = useState<VersaoInfo | null>(null);
+  const [browserName, setBrowserName] = useState("Chrome");
+  const [startupState, setStartupState] =
+    useState<BackendStartupProgress>(INITIAL_STARTUP_STATE);
+  const [startupError, setStartupError] = useState("");
+  const [startupConcluido, setStartupConcluido] = useState(false);
+  const [startupRunId, setStartupRunId] = useState(0);
 
   // Verificação de versão na inicialização (só quando API estiver disponível)
   useEffect(() => {
+    if (!startupConcluido || !apiDisponivel) {
+      return;
+    }
+
     let ativo = true;
     const checarVersao = async () => {
       // Aguarda API ficar disponível antes de consultar
@@ -54,9 +77,118 @@ export default function HomePage() {
     };
     checarVersao();
     return () => { ativo = false; };
-  }, []);
+  }, [startupConcluido, apiDisponivel]);
 
   useEffect(() => {
+    let ativo = true;
+    let ultimoStartup = INITIAL_STARTUP_STATE;
+
+    const carregarTela = async () => {
+      setStartupConcluido(false);
+      setStartupError("");
+      setErroInicializacao("");
+      setApiDisponivel(false);
+      setChromeStatus("carregando");
+      setStartupState(INITIAL_STARTUP_STATE);
+
+      await delay(250);
+      if (!ativo) return;
+
+      try {
+        const backendStatus = await waitForBackendReady({
+          timeoutMs: 20000,
+          retryDelayMs: 650,
+          onProgress: (progress) => {
+            if (!ativo) return;
+            ultimoStartup = progress;
+            setStartupState(progress);
+          },
+        });
+        if (!ativo) return;
+        setChromeStatus(backendStatus.chromeStatus);
+        setApiDisponivel(true);
+        setErroInicializacao("");
+      } catch (error) {
+        if (!ativo) return;
+        console.error("Erro ao consultar status do backend:", error);
+        const mensagem =
+          error instanceof Error
+            ? error.message
+            : "Não foi possível iniciar a API interna."
+        setChromeStatus("erro");
+        setApiDisponivel(false);
+        setErroInicializacao(mensagem);
+        setStartupError(mensagem);
+        setStartupState({
+          phase: "error",
+          title: "Nao foi possivel iniciar a API",
+          detail: "O AutoLiquid ainda nao recebeu resposta do backend interno.",
+          progress: 100,
+          attempt: ultimoStartup.attempt,
+          elapsedMs: ultimoStartup.elapsedMs,
+        });
+        return;
+      }
+
+      setStartupState({
+        phase: "restoring-data",
+        title: "Restaurando dados iniciais",
+        detail: "Carregando datas salvas e preparando a tela principal...",
+        progress: 92,
+        attempt: ultimoStartup.attempt,
+        elapsedMs: ultimoStartup.elapsedMs,
+      });
+
+      const [datesResult, settingsResult] = await Promise.allSettled([
+        fetchProcessDates(),
+        fetchAppSettings(),
+      ]);
+
+      if (datesResult.status === "fulfilled") {
+        if (!ativo) return;
+        setDates(datesResult.value);
+      } else {
+        console.error("Erro ao carregar datas do processo:", datesResult.reason);
+        if (ativo) {
+          setErroInicializacao(
+            datesResult.reason instanceof Error
+              ? datesResult.reason.message
+              : "Não foi possível carregar as datas salvas."
+          );
+        }
+      }
+
+      if (settingsResult.status === "fulfilled" && ativo) {
+        setBrowserName(settingsResult.value.navegador === "edge" ? "Edge" : "Chrome");
+      }
+
+      if (!ativo) return;
+
+      setStartupState({
+        phase: "ready",
+        title: "Tudo pronto",
+        detail: "Abrindo a tela inicial da automacao...",
+        progress: 100,
+        attempt: ultimoStartup.attempt,
+        elapsedMs: ultimoStartup.elapsedMs,
+      });
+      await delay(320);
+      if (!ativo) return;
+      setStartupConcluido(true);
+    };
+
+    carregarTela();
+
+    return () => {
+      ativo = false;
+    };
+  }, [startupRunId]);
+
+  useEffect(() => {
+    if (!startupConcluido) {
+      return;
+    }
+
     let ativo = true;
 
     const atualizarChrome = async () => {
@@ -81,49 +213,6 @@ export default function HomePage() {
       }
     };
 
-    const carregarTela = async () => {
-      const mensagensErro: string[] = [];
-      let backendDisponivel = false;
-
-      try {
-        const backendStatus = await waitForBackendReady();
-        if (!ativo) return;
-        setChromeStatus(backendStatus.chromeStatus);
-        setApiDisponivel(true);
-        backendDisponivel = true;
-      } catch (error) {
-        console.error("Erro ao consultar status do backend:", error);
-        mensagensErro.push(
-          error instanceof Error
-            ? error.message
-            : "Não foi possível consultar o status do Chrome."
-        );
-        if (ativo) {
-          setChromeStatus("erro");
-          setApiDisponivel(false);
-        }
-      }
-
-      if (backendDisponivel) {
-        try {
-          const savedDates = await fetchProcessDates();
-          if (!ativo) return;
-          setDates(savedDates);
-        } catch (error) {
-          console.error("Erro ao carregar datas do processo:", error);
-          mensagensErro.push(
-            error instanceof Error
-              ? error.message
-              : "Não foi possível carregar as datas salvas."
-          );
-        }
-      }
-
-      if (ativo) {
-        setErroInicializacao(mensagensErro.join(" "));
-      }
-    };
-
     const handleFocus = () => {
       void atualizarChrome();
     };
@@ -140,7 +229,6 @@ export default function HomePage() {
 
     window.addEventListener("focus", handleFocus);
     document.addEventListener("visibilitychange", handleVisibility);
-    carregarTela();
 
     return () => {
       ativo = false;
@@ -148,7 +236,7 @@ export default function HomePage() {
       window.removeEventListener("focus", handleFocus);
       document.removeEventListener("visibilitychange", handleVisibility);
     };
-  }, []);
+  }, [startupConcluido]);
 
   const handleFileSelect = (file: File | null) => {
     setErro("");
@@ -203,6 +291,26 @@ export default function HomePage() {
     }
   };
 
+  if (!startupConcluido) {
+    return (
+      <StartupScreen
+        phase={startupState.phase}
+        progress={startupState.progress}
+        title={startupState.title}
+        detail={startupState.detail}
+        attempt={startupState.attempt}
+        error={startupError}
+        onRetry={
+          startupError
+            ? () => {
+                setStartupRunId((current) => current + 1);
+              }
+            : undefined
+        }
+      />
+    );
+  }
+
   return (
     <div className="min-h-screen bg-background">
       {/* Background decoration */}
@@ -213,6 +321,7 @@ export default function HomePage() {
 
       <Header
         chromeStatus={chromeStatus}
+        browserName={browserName}
         onOpenTabelas={() => {
           setTabelasInitialTab("contratos");
           setTabelasVisibleTabs(undefined);
@@ -326,6 +435,8 @@ export default function HomePage() {
         onClose={() => setIsConfiguracoesOpen(false)}
         onSaved={async () => {
           try {
+            const settings = await fetchAppSettings();
+            setBrowserName(settings.navegador === "edge" ? "Edge" : "Chrome");
             const status = await fetchBackendStatus();
             setChromeStatus(status.chromeStatus);
           } catch {
