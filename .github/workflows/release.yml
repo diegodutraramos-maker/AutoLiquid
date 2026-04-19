@@ -77,6 +77,11 @@ jobs:
         run: npm install
         working-directory: frontend
 
+      # ── Assinatura ad-hoc (macOS) — remove erro "danificado", permite abrir com botão direito ──
+      - name: Ad-hoc sign Python sidecar (macOS)
+        if: matrix.platform == 'macos-latest'
+        run: codesign --force --deep --sign - src-tauri/binaries/api-aarch64-apple-darwin
+
       # ── Build Tauri (gera .dmg e .msi/.exe) ─────────────────────────────────
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0

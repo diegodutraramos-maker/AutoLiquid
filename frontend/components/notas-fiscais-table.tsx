@@ -429,49 +429,67 @@ export function NotasFiscaisTable({
                         <CollapsibleContent>
                           <div className="border-t border-glass-border/70 px-4 py-4 space-y-4">
                             {/* ── Datas por dedução ── */}
-                            <div className="rounded-xl border border-sky-500/20 bg-sky-500/8 px-4 py-3">
-                              <div className="mb-3 flex items-center gap-2">
-                                <CalendarDays className="h-3.5 w-3.5 text-sky-600" />
-                                <span className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-700">
-                                  Datas desta dedução
-                                </span>
-                              </div>
-                              <div className="grid gap-3 sm:grid-cols-2">
-                                {(["apuracao", "vencimento"] as const).map((campo) => {
-                                  const label = campo === "apuracao" ? "Data de Apuração" : "Data de Vencimento";
-                                  const placeholder = dates?.[campo] || "DD/MM/AAAA";
-                                  const valor = datasDeducoes[deducao.id]?.[campo] ?? "";
-                                  return (
-                                    <div key={campo}>
-                                      <label className="mb-1.5 block text-xs font-medium text-muted-foreground">
-                                        {label}
-                                        {!valor && dates?.[campo] && (
-                                          <span className="ml-1.5 text-sky-600">(global: {dates[campo]})</span>
-                                        )}
-                                      </label>
-                                      <input
-                                        type="text"
-                                        inputMode="numeric"
-                                        placeholder={placeholder}
-                                        value={valor}
-                                        onChange={(e) => {
-                                          const novasDatas: DatasDeducao = {
-                                            apuracao: datasDeducoes[deducao.id]?.apuracao ?? "",
-                                            vencimento: datasDeducoes[deducao.id]?.vencimento ?? "",
-                                            [campo]: e.target.value,
-                                          };
-                                          onDatasDeducaoChange?.(deducao.id, novasDatas);
-                                        }}
-                                        className="w-full rounded-xl border border-glass-border bg-background/80 px-3 py-2 text-sm text-foreground outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/20"
-                                      />
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                              <p className="mt-2 text-xs text-muted-foreground">
-                                Deixe em branco para usar as datas globais do documento.
-                              </p>
-                            </div>
+                            {(() => {
+                              const calc = deducao.datasCalculadas;
+                              const isDDF025 = deducao.siafi === "DDF025";
+                              return (
+                                <div className="rounded-xl border border-sky-500/20 bg-sky-500/5 px-4 py-3">
+                                  <div className="mb-3 flex items-center gap-2">
+                                    <CalendarDays className="h-3.5 w-3.5 text-sky-600" />
+                                    <span className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-700">
+                                      Datas desta dedução
+                                    </span>
+                                    {isDDF025 && (
+                                      <span className="ml-1 rounded-md bg-sky-100 px-2 py-0.5 text-[10px] font-medium text-sky-700">
+                                        usa datas globais
+                                      </span>
+                                    )}
+                                  </div>
+                                  <div className="grid gap-3 sm:grid-cols-2">
+                                    {(["apuracao", "vencimento"] as const).map((campo) => {
+                                      const label = campo === "apuracao" ? "Data de Apuração" : "Data de Vencimento";
+                                      // Prioridade: override manual > data calculada específica > data global
+                                      const calculada = calc?.[campo] || "";
+                                      const global = dates?.[campo] || "";
+                                      const defaultVal = calculada || global;
+                                      const override = datasDeducoes[deducao.id]?.[campo] ?? "";
+                                      return (
+                                        <div key={campo}>
+                                          <label className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                                            {label}
+                                            {!override && defaultVal && (
+                                              <span className="ml-1.5 text-sky-600">
+                                                ({calculada ? "calculada" : "global"}: {defaultVal})
+                                              </span>
+                                            )}
+                                          </label>
+                                          <input
+                                            type="text"
+                                            inputMode="numeric"
+                                            placeholder={defaultVal || "DD/MM/AAAA"}
+                                            value={override}
+                                            onChange={(e) => {
+                                              const novasDatas: DatasDeducao = {
+                                                apuracao: datasDeducoes[deducao.id]?.apuracao ?? "",
+                                                vencimento: datasDeducoes[deducao.id]?.vencimento ?? "",
+                                                [campo]: e.target.value,
+                                              };
+                                              onDatasDeducaoChange?.(deducao.id, novasDatas);
+                                            }}
+                                            className="w-full rounded-xl border border-glass-border bg-background/80 px-3 py-2 text-sm text-foreground outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/20"
+                                          />
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                  <p className="mt-2 text-xs text-muted-foreground">
+                                    {isDDF025
+                                      ? "DDF025 usa as datas globais do documento. Altere acima para sobrepor."
+                                      : "Datas calculadas automaticamente. Altere apenas se necessário."}
+                                  </p>
+                                </div>
+                              );
+                            })()}
 
                             {/* ── Rateio de retenções ── */}
                             <div>

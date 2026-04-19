@@ -56,6 +56,7 @@ export interface Deducao {
   baseCalculo: number
   valor: number
   status: "aguardando" | "executando" | "concluido" | "erro"
+  datasCalculadas?: { apuracao: string; vencimento: string }
 }
 
 export interface EtapaExecucao {

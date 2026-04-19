@@ -269,6 +269,22 @@ def _montar_documento_processado(doc_id: str, dados: dict) -> dict[str, Any]:
     ]
 
     _ded_status_map: dict = dados.get("deducoes_status", {})
+
+    # Calcula datas por código de imposto usando a lógica real da automação
+    try:
+        from datas_impostos import calcular_datas_documento
+        _datas_calc = calcular_datas_documento(
+            d,
+            vencimento_usuario=str(dados.get("dates", {}).get("vencimento", "") or ""),
+            apuracao_usuario=str(dados.get("dates", {}).get("apuracao", "") or ""),
+        )
+    except Exception:
+        _datas_calc = {}
+
+    def _normalizar_codigo(codigo: str) -> str:
+        c = str(codigo or "").strip()
+        return c.lstrip("0") or c
+
     deducoes = [
         {
             "id": i + 1,
@@ -278,6 +294,10 @@ def _montar_documento_processado(doc_id: str, dados: dict) -> dict[str, Any]:
             "baseCalculo": _brl_para_float(ded.get("Base Cálculo", "0")),
             "valor": _brl_para_float(ded.get("Valor", "0")),
             "status": _ded_status_map.get(i + 1, "aguardando"),
+            "datasCalculadas": (lambda c: {
+                "apuracao": _datas_calc.get(c, {}).get("apuracao", ""),
+                "vencimento": _datas_calc.get(c, {}).get("vencimento", ""),
+            })(_normalizar_codigo(ded.get("Código", ""))),
         }
         for i, ded in enumerate(d.get("Deduções", []))
     ]
@@ -666,9 +686,28 @@ def executar_deducao_individual(doc_id: str, ded_id: int, payload: ExecucaoPaylo
         import comprasnet_deducao
 
         dados = doc["dados_extraidos"]
-        # Datas: usa override por dedução se fornecido, caso contrário usa as globais do documento
-        venc_deducao = str(payload.dataVencimento or doc["dates"].get("vencimento", "") or "")
-        apuracao     = str(payload.dataApuracao    or doc["dates"].get("apuracao", "")    or "")
+
+        # Datas: usa override por dedução se fornecido; se não, calcula pela lógica real
+        if payload.dataVencimento or payload.dataApuracao:
+            venc_deducao = str(payload.dataVencimento or "")
+            apuracao     = str(payload.dataApuracao    or "")
+        else:
+            # Recalcula as datas específicas para esta dedução
+            try:
+                from datas_impostos import calcular_datas_documento
+                _datas_calc = calcular_datas_documento(
+                    dados,
+                    vencimento_usuario=str(doc["dates"].get("vencimento", "") or ""),
+                    apuracao_usuario=str(doc["dates"].get("apuracao", "") or ""),
+                )
+                ded = deducoes_raw[ded_id - 1]
+                cod = str(ded.get("Código", "") or "").strip().lstrip("0") or str(ded.get("Código", "") or "").strip()
+                _d = _datas_calc.get(cod, {})
+                venc_deducao = str(_d.get("vencimento", "") or doc["dates"].get("vencimento", "") or "")
+                apuracao     = str(_d.get("apuracao",    "") or doc["dates"].get("apuracao",    "") or "")
+            except Exception:
+                venc_deducao = str(doc["dates"].get("vencimento", "") or "")
+                apuracao     = str(doc["dates"].get("apuracao", "") or "")
         lf_numero    = str(doc.get("lf_numero", "") or "")
         deve_parar   = lambda: bool(doc.get("cancel_requested", False))
 

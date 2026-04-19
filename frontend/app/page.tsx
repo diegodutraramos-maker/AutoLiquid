@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
-import { FileUp, Loader2 } from "lucide-react";
+import { ArrowDownToLine, FileUp, Loader2, X } from "lucide-react";
 import { Header } from "@/components/header";
 import { DateFields } from "@/components/date-fields";
 import { UploadZone } from "@/components/upload-zone";
@@ -14,8 +14,10 @@ import {
   fetchBackendStatus,
   fetchProcessDates,
   openChromeSession,
+  verificarAtualizacao,
   type TableKey,
   type ProcessDates,
+  type VersaoInfo,
   uploadPDF,
 } from "@/lib/data";
 
@@ -33,6 +35,25 @@ export default function HomePage() {
   const [apiDisponivel, setApiDisponivel] = useState(true);
   const [chromeStatus, setChromeStatus] = useState<"pronto" | "carregando" | "erro">("carregando");
   const [abrindoChrome, setAbrindoChrome] = useState(false);
+  const [bannerUpdate, setBannerUpdate] = useState<VersaoInfo | null>(null);
+
+  // Verificação de versão na inicialização (só quando API estiver disponível)
+  useEffect(() => {
+    let ativo = true;
+    const checarVersao = async () => {
+      // Aguarda API ficar disponível antes de consultar
+      await new Promise(r => setTimeout(r, 3000));
+      if (!ativo) return;
+      try {
+        const info = await verificarAtualizacao();
+        if (ativo && info.tem_atualizacao) setBannerUpdate(info);
+      } catch {
+        // silencia erros de rede na checagem automática
+      }
+    };
+    checarVersao();
+    return () => { ativo = false; };
+  }, []);
 
   useEffect(() => {
     let ativo = true;
@@ -209,6 +230,36 @@ export default function HomePage() {
             Automação contábil de liquidação · Comprasnet / SIAFI
           </p>
         </div>
+
+        {/* Banner de nova versão */}
+        {bannerUpdate && (
+          <div className="mb-6 flex items-center justify-between gap-3 rounded-xl border border-violet-500/30 bg-violet-500/10 px-4 py-3">
+            <div className="flex items-center gap-3 min-w-0">
+              <ArrowDownToLine className="h-4 w-4 shrink-0 text-violet-700" />
+              <p className="text-sm text-violet-700">
+                <span className="font-semibold">Nova versão disponível:</span>{" "}
+                v{bannerUpdate.versao_nova}
+              </p>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <a
+                href={bannerUpdate.url_download}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="rounded-lg border border-violet-500/30 bg-background/80 px-3 py-1.5 text-xs font-medium text-violet-700 transition-colors hover:bg-background"
+              >
+                Baixar
+              </a>
+              <button
+                type="button"
+                onClick={() => setBannerUpdate(null)}
+                className="rounded-full p-1 text-violet-500 transition-colors hover:bg-violet-500/10"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+        )}
 
         {erroInicializacao && (
           <div className="mb-8 rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">

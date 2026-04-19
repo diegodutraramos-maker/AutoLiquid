@@ -2,14 +2,17 @@
 
 import { useEffect, useState } from "react";
 import {
+  ArrowDownToLine,
   CalendarDays,
   Check,
+  CheckCircle2,
   Chrome,
   Code2,
   Coffee,
   Copy,
   FileText,
   Globe,
+  Loader2,
   Moon,
   Play,
   RefreshCw,
@@ -17,6 +20,7 @@ import {
   Settings,
   Settings2,
   Sun,
+  Tag,
   X,
 } from "lucide-react";
 import { useTheme } from "next-themes";
@@ -26,7 +30,9 @@ import {
   openChromeSession,
   recarregarModulos,
   saveAppSettings,
+  verificarAtualizacao,
   type AppSettings,
+  type VersaoInfo,
 } from "@/lib/data";
 
 interface ConfiguracoesModalProps {
@@ -65,11 +71,16 @@ export function ConfiguracoesModal({
   const [recarregando, setRecarregando] = useState(false);
   const [msgRecarregar, setMsgRecarregar] = useState("");
 
+  // Atualização
+  const [verificandoUpdate, setVerificandoUpdate] = useState(false);
+  const [infoUpdate, setInfoUpdate] = useState<VersaoInfo | null>(null);
+
   useEffect(() => {
     if (!isOpen) return;
 
     let ativo = true;
     setAbaAtiva("basico");
+    setInfoUpdate(null);
 
     const carregar = async () => {
       setLoading(true);
@@ -159,6 +170,23 @@ export function ConfiguracoesModal({
       );
     } finally {
       setAbrindoNavegador(false);
+    }
+  };
+
+  const handleVerificarUpdate = async () => {
+    setVerificandoUpdate(true);
+    setErro("");
+    try {
+      const info = await verificarAtualizacao();
+      setInfoUpdate(info);
+    } catch (error) {
+      setErro(
+        error instanceof Error
+          ? error.message
+          : "Não foi possível verificar atualizações."
+      );
+    } finally {
+      setVerificandoUpdate(false);
     }
   };
 
@@ -322,37 +350,8 @@ export function ConfiguracoesModal({
                           );
                         })}
                       </div>
-                    </section>
 
-                    {/* Porta de depuração + Abrir navegador */}
-                    <section className="rounded-2xl border border-glass-border bg-secondary/25 px-4 py-4 space-y-4">
-                      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-                        <div>
-                          <p className="text-sm font-semibold text-foreground">
-                            Porta de depuração
-                          </p>
-                          <p className="mt-1 text-sm text-muted-foreground">
-                            Use a mesma porta do{" "}
-                            <code className="rounded bg-secondary/60 px-1 py-0.5 text-xs">
-                              --remote-debugging-port
-                            </code>.
-                          </p>
-                        </div>
-                        <div className="relative w-full sm:w-36">
-                          <input
-                            id="chrome-porta"
-                            type="number"
-                            min={1}
-                            max={65535}
-                            value={settings.chromePorta}
-                            onChange={(e) =>
-                              setSettings((c) => ({ ...c, chromePorta: Number(e.target.value || 0) }))
-                            }
-                            className="w-full rounded-xl border border-glass-border bg-background/80 py-2.5 pl-3 pr-4 text-sm text-foreground shadow-inner outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
-                          />
-                        </div>
-                      </div>
-
+                      {/* Abrir navegador */}
                       <div className="flex justify-end">
                         <GlassButton
                           variant="secondary"
@@ -404,12 +403,145 @@ export function ConfiguracoesModal({
                         </div>
                       </div>
                     </section>
+
+                    {/* Atualização */}
+                    <section className="rounded-2xl border border-violet-500/20 bg-violet-500/10 px-4 py-4">
+                      <div className="flex items-start gap-3">
+                        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-violet-500/20 bg-background/80 text-violet-700 shadow-[0_16px_30px_-24px_rgba(124,58,237,0.7)]">
+                          <ArrowDownToLine className="h-5 w-5" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-start justify-between gap-3">
+                            <div>
+                              <h3 className="text-sm font-semibold text-foreground">Atualização</h3>
+                              <p className="mt-1 text-sm text-muted-foreground">
+                                Verifique se há uma nova versão disponível.
+                              </p>
+                            </div>
+                            <GlassButton
+                              variant="ghost"
+                              size="sm"
+                              onClick={handleVerificarUpdate}
+                              disabled={verificandoUpdate}
+                              className="border border-violet-500/20 bg-background/80 text-foreground hover:bg-background shrink-0"
+                            >
+                              {verificandoUpdate ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <RefreshCw className="h-4 w-4" />
+                              )}
+                              {verificandoUpdate ? "Verificando..." : "Verificar"}
+                            </GlassButton>
+                          </div>
+
+                          {/* Resultado da verificação */}
+                          {infoUpdate && (
+                            <div className="mt-3 space-y-2">
+                              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                                <Tag className="h-3.5 w-3.5" />
+                                Versão atual: <span className="font-semibold text-foreground">v{infoUpdate.versao_atual}</span>
+                              </div>
+                              {infoUpdate.tem_atualizacao ? (
+                                <div className="rounded-xl border border-violet-500/30 bg-background/75 px-3 py-3 space-y-2">
+                                  <p className="text-sm font-medium text-violet-700">
+                                    Nova versão disponível: v{infoUpdate.versao_nova}
+                                  </p>
+                                  <a
+                                    href={infoUpdate.url_download}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center gap-2 rounded-lg border border-violet-500/30 bg-violet-500/10 px-3 py-1.5 text-sm font-medium text-violet-700 transition-colors hover:bg-violet-500/20"
+                                  >
+                                    <ArrowDownToLine className="h-3.5 w-3.5" />
+                                    Baixar v{infoUpdate.versao_nova}
+                                  </a>
+                                </div>
+                              ) : (
+                                <div className="flex items-center gap-2 rounded-xl border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700">
+                                  <CheckCircle2 className="h-4 w-4 shrink-0" />
+                                  O aplicativo está atualizado.
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </section>
+
+                    {/* Apoiar o desenvolvimento */}
+                    <section className="rounded-2xl border border-amber-500/20 bg-amber-500/10 px-4 py-5">
+                      <div className="flex flex-col items-center gap-4 text-center">
+                        <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-amber-500/20 bg-background/80 text-amber-600 shadow-[0_16px_30px_-24px_rgba(180,83,9,0.8)]">
+                          <Coffee className="h-7 w-7" />
+                        </div>
+                        <div>
+                          <h3 className="text-sm font-semibold text-foreground">Apoiar o desenvolvimento</h3>
+                          <p className="mt-1 text-sm text-muted-foreground">
+                            Se a automação está te ajudando, considere pagar um café. ☕
+                          </p>
+                        </div>
+
+                        <div className="w-full rounded-2xl border border-glass-border bg-background/75 px-4 py-3">
+                          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                            Chave PIX
+                          </p>
+                          <p className="mt-1.5 text-base font-semibold tracking-[0.04em] text-foreground">
+                            111.779.619-11
+                          </p>
+                          <p className="mt-0.5 text-sm text-muted-foreground">Diego Dutra Ramos</p>
+                        </div>
+
+                        <GlassButton
+                          variant="ghost"
+                          size="sm"
+                          onClick={handleCopiarPix}
+                          className="border border-amber-500/20 bg-background/80 text-foreground hover:bg-background"
+                        >
+                          {pixCopiado ? (
+                            <Check className="h-4 w-4 text-success" />
+                          ) : (
+                            <Copy className="h-4 w-4" />
+                          )}
+                          {pixCopiado ? "PIX copiado!" : "Copiar chave PIX"}
+                        </GlassButton>
+                      </div>
+                    </section>
                   </>
                 )}
 
                 {/* ── ABA AVANÇADO ── */}
                 {abaAtiva === "avancado" && (
                   <>
+                    {/* Porta de depuração */}
+                    <section className="rounded-2xl border border-glass-border bg-secondary/25 px-4 py-4">
+                      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+                        <div>
+                          <p className="text-sm font-semibold text-foreground">
+                            Porta de depuração
+                          </p>
+                          <p className="mt-1 text-sm text-muted-foreground">
+                            Use a mesma porta do{" "}
+                            <code className="rounded bg-secondary/60 px-1 py-0.5 text-xs">
+                              --remote-debugging-port
+                            </code>.
+                          </p>
+                        </div>
+                        <div className="relative w-full sm:w-36">
+                          <input
+                            id="chrome-porta"
+                            type="number"
+                            min={1}
+                            max={65535}
+                            value={settings.chromePorta}
+                            onChange={(e) =>
+                              setSettings((c) => ({ ...c, chromePorta: Number(e.target.value || 0) }))
+                            }
+                            className="w-full rounded-xl border border-glass-border bg-background/80 py-2.5 pl-3 pr-4 text-sm text-foreground shadow-inner outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
+                          />
+                        </div>
+                      </div>
+                    </section>
+
                     {/* Log de execução */}
                     <section className="space-y-3">
                       <div>
@@ -505,45 +637,6 @@ export function ConfiguracoesModal({
                             </div>
                           )}
                         </div>
-                      </div>
-                    </section>
-
-                    {/* Apoiar o desenvolvimento */}
-                    <section className="rounded-2xl border border-amber-500/20 bg-amber-500/10 px-4 py-5">
-                      <div className="flex flex-col items-center gap-4 text-center">
-                        <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-amber-500/20 bg-background/80 text-amber-600 shadow-[0_16px_30px_-24px_rgba(180,83,9,0.8)]">
-                          <Coffee className="h-7 w-7" />
-                        </div>
-                        <div>
-                          <h3 className="text-sm font-semibold text-foreground">Apoiar o desenvolvimento</h3>
-                          <p className="mt-1 text-sm text-muted-foreground">
-                            Se a automação está te ajudando, considere pagar um café. ☕
-                          </p>
-                        </div>
-
-                        <div className="w-full rounded-2xl border border-glass-border bg-background/75 px-4 py-3">
-                          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                            Chave PIX
-                          </p>
-                          <p className="mt-1.5 text-base font-semibold tracking-[0.04em] text-foreground">
-                            111.779.619-11
-                          </p>
-                          <p className="mt-0.5 text-sm text-muted-foreground">Diego Dutra Ramos</p>
-                        </div>
-
-                        <GlassButton
-                          variant="ghost"
-                          size="sm"
-                          onClick={handleCopiarPix}
-                          className="border border-amber-500/20 bg-background/80 text-foreground hover:bg-background"
-                        >
-                          {pixCopiado ? (
-                            <Check className="h-4 w-4 text-success" />
-                          ) : (
-                            <Copy className="h-4 w-4" />
-                          )}
-                          {pixCopiado ? "PIX copiado!" : "Copiar chave PIX"}
-                        </GlassButton>
                       </div>
                     </section>
                   </>
