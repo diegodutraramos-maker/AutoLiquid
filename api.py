@@ -841,3 +841,8 @@ def atualizar_tabela_web(table_key: str, payload: TableSaveRequest) -> dict[str,
     if table_key not in TABLE_DEFINITIONS:
         raise HTTPException(status_code=404, detail="Tabela não encontrada.")
     return salvar_tabela_web(table_key, payload.rows)
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="127.0.0.1", port=8000)

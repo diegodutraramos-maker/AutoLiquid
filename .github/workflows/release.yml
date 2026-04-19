@@ -1,0 +1,88 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"   # Dispara ao criar uma tag: git tag v1.0.0 && git push --tags
+
+jobs:
+  release:
+    permissions:
+      contents: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos-latest
+            args: "--target aarch64-apple-darwin"   # macOS Apple Silicon (M1/M2/M3)
+            python-arch: arm64
+          - platform: windows-latest
+            args: ""
+            python-arch: x64
+
+    runs-on: ${{ matrix.platform }}
+
+    steps:
+      # ── Checkout ────────────────────────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── Node.js ─────────────────────────────────────────────────────────────
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # ── Rust ────────────────────────────────────────────────────────────────
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin' || '' }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: "./src-tauri -> target"
+
+      # ── Python ──────────────────────────────────────────────────────────────
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt pyinstaller
+
+      # ── Empacotar backend Python como binário nativo ─────────────────────────
+      - name: Build Python sidecar (macOS)
+        if: matrix.platform == 'macos-latest'
+        run: |
+          pyinstaller --onefile --name api api.py
+          mkdir -p src-tauri/binaries
+          cp dist/api src-tauri/binaries/api-aarch64-apple-darwin
+
+      - name: Build Python sidecar (Windows)
+        if: matrix.platform == 'windows-latest'
+        run: |
+          pyinstaller --onefile --name api api.py
+          mkdir -p src-tauri/binaries
+          cp dist/api.exe src-tauri/binaries/api-x86_64-pc-windows-msvc.exe
+
+      # ── Frontend ─────────────────────────────────────────────────────────────
+      - name: Install frontend dependencies
+        run: npm install
+        working-directory: frontend
+
+      # ── Build Tauri (gera .dmg e .msi/.exe) ─────────────────────────────────
+      - name: Build Tauri app
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_name }}
+          releaseName: "AutoLiquid ${{ github.ref_name }}"
+          releaseBody: "Veja os assets abaixo para baixar o instalador."
+          releaseDraft: false
+          prerelease: false
+          args: ${{ matrix.args }}
