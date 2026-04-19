@@ -20,12 +20,6 @@ jobs:
             python-arch: arm64
             sidecar-bin: api-aarch64-apple-darwin
             signed-asset: AutoLiquid-macos-arm64.zip
-          - platform: macos-13
-            target: x86_64-apple-darwin
-            args: "--target x86_64-apple-darwin"
-            python-arch: x64
-            sidecar-bin: api-x86_64-apple-darwin
-            signed-asset: AutoLiquid-macos-x64.zip
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
             args: "--target x86_64-pc-windows-msvc"
