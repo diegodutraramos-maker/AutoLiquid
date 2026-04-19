@@ -70,6 +70,9 @@ jobs:
           cp dist/api.exe src-tauri/binaries/api-x86_64-pc-windows-msvc.exe
 
       # ── Frontend ─────────────────────────────────────────────────────────────
+      - name: Install root dependencies (Tauri CLI)
+        run: npm install
+
       - name: Install frontend dependencies
         run: npm install
         working-directory: frontend
