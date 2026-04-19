@@ -1,18 +1,26 @@
 "use client";
 
 import { useState } from "react";
-import { Check, ChevronDown, ChevronRight, Loader2, X, AlertTriangle } from "lucide-react";
+import { CalendarDays, Check, ChevronDown, ChevronRight, Loader2, X, AlertTriangle } from "lucide-react";
 import { GlassCard, GlassButton, GlassTable, GlassTableRow, GlassTableCell, GlassPanel } from "./glass-card";
-import type { Deducao, Empenho, NotaFiscal, ResumoFinanceiro } from "@/lib/data";
+import type { Deducao, Empenho, NotaFiscal, ProcessDates, ResumoFinanceiro } from "@/lib/data";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 
 type TabType = "notas" | "empenhos" | "deducoes" | "log";
+
+interface DatasDeducao {
+  apuracao: string;
+  vencimento: string;
+}
 
 interface NotasFiscaisTableProps {
   notasFiscais: NotaFiscal[];
   empenhos: Empenho[];
   deducoes: Deducao[];
   resumo: ResumoFinanceiro;
+  dates?: ProcessDates;
+  datasDeducoes?: Record<number, DatasDeducao>;
+  onDatasDeducaoChange?: (dedId: number, datas: DatasDeducao) => void;
   logs?: string[];
   logsSimples?: string[];
   nivelLog?: "simples" | "desenvolvedor";
@@ -164,6 +172,9 @@ export function NotasFiscaisTable({
   empenhos,
   deducoes,
   resumo,
+  dates,
+  datasDeducoes = {},
+  onDatasDeducaoChange,
   logs = [],
   logsSimples = [],
   nivelLog = "desenvolvedor",
@@ -416,7 +427,54 @@ export function NotasFiscaisTable({
                         </CollapsibleTrigger>
 
                         <CollapsibleContent>
-                          <div className="border-t border-glass-border/70 px-4 py-4">
+                          <div className="border-t border-glass-border/70 px-4 py-4 space-y-4">
+                            {/* ── Datas por dedução ── */}
+                            <div className="rounded-xl border border-sky-500/20 bg-sky-500/8 px-4 py-3">
+                              <div className="mb-3 flex items-center gap-2">
+                                <CalendarDays className="h-3.5 w-3.5 text-sky-600" />
+                                <span className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-700">
+                                  Datas desta dedução
+                                </span>
+                              </div>
+                              <div className="grid gap-3 sm:grid-cols-2">
+                                {(["apuracao", "vencimento"] as const).map((campo) => {
+                                  const label = campo === "apuracao" ? "Data de Apuração" : "Data de Vencimento";
+                                  const placeholder = dates?.[campo] || "DD/MM/AAAA";
+                                  const valor = datasDeducoes[deducao.id]?.[campo] ?? "";
+                                  return (
+                                    <div key={campo}>
+                                      <label className="mb-1.5 block text-xs font-medium text-muted-foreground">
+                                        {label}
+                                        {!valor && dates?.[campo] && (
+                                          <span className="ml-1.5 text-sky-600">(global: {dates[campo]})</span>
+                                        )}
+                                      </label>
+                                      <input
+                                        type="text"
+                                        inputMode="numeric"
+                                        placeholder={placeholder}
+                                        value={valor}
+                                        onChange={(e) => {
+                                          const novasDatas: DatasDeducao = {
+                                            apuracao: datasDeducoes[deducao.id]?.apuracao ?? "",
+                                            vencimento: datasDeducoes[deducao.id]?.vencimento ?? "",
+                                            [campo]: e.target.value,
+                                          };
+                                          onDatasDeducaoChange?.(deducao.id, novasDatas);
+                                        }}
+                                        className="w-full rounded-xl border border-glass-border bg-background/80 px-3 py-2 text-sm text-foreground outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/20"
+                                      />
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                              <p className="mt-2 text-xs text-muted-foreground">
+                                Deixe em branco para usar as datas globais do documento.
+                              </p>
+                            </div>
+
+                            {/* ── Rateio de retenções ── */}
+                            <div>
                             <div className="mb-3 flex flex-wrap gap-3 text-xs text-muted-foreground">
                               <span>Rateio manual proporcional às NFs exibidas.</span>
                               <span>Base do percentual: {formatCurrency(basePercentual)}</span>
@@ -456,6 +514,7 @@ export function NotasFiscaisTable({
                                 );
                               })}
                             </GlassTable>
+                            </div>{/* fim rateio */}
                           </div>
                         </CollapsibleContent>
                       </div>

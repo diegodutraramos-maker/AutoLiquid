@@ -446,6 +446,8 @@ export async function executarDeducao(
     lfNumero?: string
     ugrNumero?: string
     vencimentoDocumento?: string
+    dataApuracao?: string
+    dataVencimento?: string
   } = {}
 ): Promise<DocumentoProcessado> {
   return apiFetch<DocumentoProcessado>(
@@ -461,6 +463,8 @@ export async function executarDeducao(
         contaBanco: "",
         contaAgencia: "",
         contaConta: "",
+        dataApuracao: options.dataApuracao ?? "",
+        dataVencimento: options.dataVencimento ?? "",
       }),
     },
     {
@@ -479,4 +483,22 @@ export async function pararExecucao(
       method: "POST",
     }
   )
+}
+
+// ── Versão / Atualização ──────────────────────────────────────────────────
+
+export interface VersaoInfo {
+  versao_atual: string
+  versao_nova: string
+  url_download: string
+  tem_atualizacao: boolean
+  erro?: string
+}
+
+export async function obterVersao(): Promise<{ versao: string }> {
+  return apiFetch<{ versao: string }>("/versao")
+}
+
+export async function verificarAtualizacao(): Promise<VersaoInfo> {
+  return apiFetch<VersaoInfo>("/versao/verificar", {}, { timeoutMs: 8000 })
 }

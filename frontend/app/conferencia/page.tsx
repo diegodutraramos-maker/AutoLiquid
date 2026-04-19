@@ -108,6 +108,7 @@ function ConferenciaPageContent() {
   const [contaAgencia, setContaAgencia] = useState("");
   const [contaConta, setContaConta] = useState("");
   const [pendingExecution, setPendingExecution] = useState<PendingExecution>(null);
+  const [datasDeducoes, setDatasDeducoes] = useState<Record<number, { apuracao: string; vencimento: string }>>({});
   const precisaLF = deducoes.some((deducao) => deducao.siafi === "DOB001");
   const precisaUGR = requiresCentroCusto;
   const temFatura = notasFiscais.some((nota) =>
@@ -494,11 +495,14 @@ function ConferenciaPageContent() {
     setStatusMensagem(`Executando dedução ${deducao.tipo || deducao.siafi}...`);
     setErro("");
     try {
+      const datasOverride = datasDeducoes[deducao.id];
       const payload = await executarDeducao(documentoId, deducao.id, {
         signal: controller.signal,
         lfNumero,
         ugrNumero,
         vencimentoDocumento,
+        dataApuracao: datasOverride?.apuracao || "",
+        dataVencimento: datasOverride?.vencimento || "",
       });
       aplicarPayload(payload);
       setStatusMensagem(`Dedução ${deducao.tipo || deducao.siafi} concluída.`);
@@ -754,6 +758,11 @@ function ConferenciaPageContent() {
               empenhos={empenhos}
               deducoes={deducoes}
               resumo={resumo}
+              dates={dates}
+              datasDeducoes={datasDeducoes}
+              onDatasDeducaoChange={(dedId, datas) =>
+                setDatasDeducoes((prev) => ({ ...prev, [dedId]: datas }))
+              }
               logs={logs}
               logsSimples={logsSimples}
               nivelLog={nivelLog}

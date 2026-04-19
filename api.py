@@ -90,6 +90,9 @@ class ExecucaoPayload(BaseModel):
     contaBanco: str = ""
     contaAgencia: str = ""
     contaConta: str = ""
+    # Datas específicas por dedução (sobrepõem as datas globais do documento)
+    dataApuracao: str = ""
+    dataVencimento: str = ""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -663,8 +666,9 @@ def executar_deducao_individual(doc_id: str, ded_id: int, payload: ExecucaoPaylo
         import comprasnet_deducao
 
         dados = doc["dados_extraidos"]
-        venc_deducao = str(doc["dates"].get("vencimento", "") or "")
-        apuracao     = str(doc["dates"].get("apuracao", "") or "")
+        # Datas: usa override por dedução se fornecido, caso contrário usa as globais do documento
+        venc_deducao = str(payload.dataVencimento or doc["dates"].get("vencimento", "") or "")
+        apuracao     = str(payload.dataApuracao    or doc["dates"].get("apuracao", "")    or "")
         lf_numero    = str(doc.get("lf_numero", "") or "")
         deve_parar   = lambda: bool(doc.get("cancel_requested", False))
 
@@ -841,6 +845,55 @@ def atualizar_tabela_web(table_key: str, payload: TableSaveRequest) -> dict[str,
     if table_key not in TABLE_DEFINITIONS:
         raise HTTPException(status_code=404, detail="Tabela não encontrada.")
     return salvar_tabela_web(table_key, payload.rows)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# VERSÃO / ATUALIZAÇÃO
+# ─────────────────────────────────────────────────────────────────────────────
+
+APP_VERSION = "1.0.5"
+_GITHUB_REPO  = "diegodutraramos-maker/AutoLiquid"
+_GITHUB_API   = f"https://api.github.com/repos/{_GITHUB_REPO}/releases/latest"
+_RELEASES_URL = f"https://github.com/{_GITHUB_REPO}/releases/latest"
+
+
+def _comparar_versao(a: str, b: str) -> int:
+    """Retorna 1 se a > b, -1 se a < b, 0 se iguais."""
+    def _partes(v: str):
+        return tuple(int(x) for x in v.lstrip("v").split(".") if x.isdigit())
+    pa, pb = _partes(a), _partes(b)
+    return (pa > pb) - (pa < pb)
+
+
+@app.get("/versao")
+def obter_versao() -> dict[str, Any]:
+    return {"versao": APP_VERSION}
+
+
+@app.get("/versao/verificar")
+def verificar_atualizacao() -> dict[str, Any]:
+    try:
+        r = requests.get(_GITHUB_API, timeout=6,
+                         headers={"Accept": "application/vnd.github+json"})
+        r.raise_for_status()
+        data = r.json()
+        versao_nova = data.get("tag_name", "").lstrip("v")
+        url_download = data.get("html_url", _RELEASES_URL)
+        tem_atualizacao = bool(versao_nova) and _comparar_versao(versao_nova, APP_VERSION) > 0
+        return {
+            "versao_atual": APP_VERSION,
+            "versao_nova": versao_nova,
+            "url_download": url_download,
+            "tem_atualizacao": tem_atualizacao,
+        }
+    except Exception as exc:
+        return {
+            "versao_atual": APP_VERSION,
+            "versao_nova": "",
+            "url_download": _RELEASES_URL,
+            "tem_atualizacao": False,
+            "erro": str(exc),
+        }
 
 
 if __name__ == "__main__":
