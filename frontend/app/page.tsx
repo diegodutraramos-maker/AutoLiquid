@@ -1,0 +1,300 @@
+"use client";
+
+import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
+import { FileUp, Loader2 } from "lucide-react";
+import { Header } from "@/components/header";
+import { DateFields } from "@/components/date-fields";
+import { UploadZone } from "@/components/upload-zone";
+import { TabelasModal } from "@/components/tabelas-modal";
+import { ConfiguracoesModal } from "@/components/configuracoes-modal";
+import { GlassButton } from "@/components/glass-card";
+import {
+  MOCK_PROCESS_DATES,
+  fetchBackendStatus,
+  fetchProcessDates,
+  openChromeSession,
+  type TableKey,
+  type ProcessDates,
+  uploadPDF,
+} from "@/lib/data";
+
+export default function HomePage() {
+  const router = useRouter();
+  const [dates, setDates] = useState<ProcessDates>(MOCK_PROCESS_DATES);
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const [isTabelasOpen, setIsTabelasOpen] = useState(false);
+  const [tabelasInitialTab, setTabelasInitialTab] = useState<TableKey>("contratos");
+  const [tabelasVisibleTabs, setTabelasVisibleTabs] = useState<TableKey[] | undefined>(undefined);
+  const [isConfiguracoesOpen, setIsConfiguracoesOpen] = useState(false);
+  const [erro, setErro] = useState("");
+  const [erroInicializacao, setErroInicializacao] = useState("");
+  const [apiDisponivel, setApiDisponivel] = useState(true);
+  const [chromeStatus, setChromeStatus] = useState<"pronto" | "carregando" | "erro">("carregando");
+  const [abrindoChrome, setAbrindoChrome] = useState(false);
+
+  useEffect(() => {
+    let ativo = true;
+
+    const atualizarChrome = async () => {
+      try {
+        const backendStatus = await fetchBackendStatus();
+        if (!ativo) return false;
+        setChromeStatus(backendStatus.chromeStatus);
+        setApiDisponivel(true);
+        setErroInicializacao("");
+        return true;
+      } catch (error) {
+        if (!ativo) return false;
+        console.error("Erro ao consultar status do backend:", error);
+        setChromeStatus("erro");
+        setApiDisponivel(false);
+        setErroInicializacao(
+          error instanceof Error
+            ? error.message
+            : "Não foi possível consultar o status do Chrome."
+        );
+        return false;
+      }
+    };
+
+    const carregarTela = async () => {
+      const [savedDatesResult, backendStatusResult] = await Promise.allSettled([
+        fetchProcessDates(),
+        fetchBackendStatus(),
+      ]);
+      const mensagensErro: string[] = [];
+
+      if (savedDatesResult.status === "fulfilled") {
+        if (!ativo) return;
+        setDates(savedDatesResult.value);
+      } else {
+        console.error("Erro ao carregar datas do processo:", savedDatesResult.reason);
+        mensagensErro.push(
+          savedDatesResult.reason instanceof Error
+            ? savedDatesResult.reason.message
+            : "Não foi possível carregar as datas salvas."
+        );
+      }
+
+      if (backendStatusResult.status === "fulfilled") {
+        if (!ativo) return;
+        setChromeStatus(backendStatusResult.value.chromeStatus);
+        setApiDisponivel(true);
+      } else {
+        console.error("Erro ao consultar status do backend:", backendStatusResult.reason);
+        mensagensErro.push(
+          backendStatusResult.reason instanceof Error
+            ? backendStatusResult.reason.message
+            : "Não foi possível consultar o status do Chrome."
+        );
+        if (ativo) {
+          setChromeStatus("erro");
+          setApiDisponivel(false);
+        }
+      }
+
+      if (ativo) {
+        setErroInicializacao(mensagensErro.join(" "));
+      }
+    };
+
+    const handleFocus = () => {
+      void atualizarChrome();
+    };
+
+    const handleVisibility = () => {
+      if (!document.hidden) {
+        void atualizarChrome();
+      }
+    };
+
+    const intervalId = window.setInterval(() => {
+      void atualizarChrome();
+    }, 5000);
+
+    window.addEventListener("focus", handleFocus);
+    document.addEventListener("visibilitychange", handleVisibility);
+    carregarTela();
+
+    return () => {
+      ativo = false;
+      window.clearInterval(intervalId);
+      window.removeEventListener("focus", handleFocus);
+      document.removeEventListener("visibilitychange", handleVisibility);
+    };
+  }, []);
+
+  const handleFileSelect = (file: File | null) => {
+    setErro("");
+    setSelectedFile(file);
+  };
+
+  const handleProcessar = async () => {
+    if (!selectedFile) {
+      setErro("Selecione um PDF antes de processar.");
+      return;
+    }
+
+    setIsUploading(true);
+    setErro("");
+    try {
+      const result = await uploadPDF(selectedFile, dates);
+      if (result.success) {
+        router.push(`/conferencia?id=${result.documentoId}`);
+        return;
+      }
+      setErro(result.mensagem || "Não foi possível processar o documento.");
+    } catch (error) {
+      console.error("Erro ao processar:", error);
+      setErro(
+        error instanceof Error
+          ? error.message
+          : "Erro inesperado ao processar o documento."
+      );
+    } finally {
+      setIsUploading(false);
+    }
+  };
+
+  const handleAbrirChrome = async () => {
+    setAbrindoChrome(true);
+    setErro("");
+    try {
+      const status = await openChromeSession();
+      setChromeStatus(status.chromeStatus);
+      setApiDisponivel(true);
+      setErroInicializacao("");
+    } catch (error) {
+      setErroInicializacao(
+        error instanceof Error
+          ? error.message
+          : "Nao foi possivel abrir o Chrome."
+      );
+      setChromeStatus("erro");
+      setApiDisponivel(false);
+    } finally {
+      setAbrindoChrome(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-background">
+      {/* Background decoration */}
+      <div className="pointer-events-none fixed inset-0 overflow-hidden">
+        <div className="absolute -left-1/4 -top-1/4 h-1/2 w-1/2 rounded-full bg-primary/5 blur-3xl" />
+        <div className="absolute -bottom-1/4 -right-1/4 h-1/2 w-1/2 rounded-full bg-accent/5 blur-3xl" />
+      </div>
+
+      <Header
+        chromeStatus={chromeStatus}
+        onOpenTabelas={() => {
+          setTabelasInitialTab("contratos");
+          setTabelasVisibleTabs(undefined);
+          setIsTabelasOpen(true);
+        }}
+        onOpenConfiguracoes={() => setIsConfiguracoesOpen(true)}
+        onOpenChrome={handleAbrirChrome}
+        chromeActionDisabled={abrindoChrome || !apiDisponivel}
+      />
+
+      <main className="relative mx-auto max-w-3xl px-6 py-12">
+        {/* Title Section */}
+        <div className="mb-12 text-center">
+          <h1 className="text-balance text-3xl font-bold tracking-tight text-foreground sm:text-4xl">
+            AutoLiquid
+          </h1>
+          <p className="mt-3 text-muted-foreground">
+            Automação contábil de liquidação · Comprasnet / SIAFI
+          </p>
+        </div>
+
+        {erroInicializacao && (
+          <div className="mb-8 rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+            {erroInicializacao}
+          </div>
+        )}
+
+        {/* Date Fields */}
+        <div className="mb-8">
+          <DateFields dates={dates} onDatesChange={setDates} />
+        </div>
+
+        {/* Upload Zone */}
+        <div className="mb-8">
+          <UploadZone
+            onFileSelect={handleFileSelect}
+            disabled={!apiDisponivel}
+            disabledMessage={
+              !apiDisponivel
+                ? "A seleção foi desativada porque a API web não está respondendo."
+                : undefined
+            }
+          />
+        </div>
+
+        {/* Action Button */}
+        <div className="flex flex-col items-center gap-4">
+          <GlassButton
+            variant="secondary"
+            size="lg"
+            onClick={handleProcessar}
+            disabled={!selectedFile || isUploading || !apiDisponivel}
+          >
+            {isUploading ? (
+              <Loader2 className="h-5 w-5 animate-spin" />
+            ) : (
+              <FileUp className="h-5 w-5" />
+            )}
+            {isUploading ? "Processando PDF..." : "Processar Documento"}
+          </GlassButton>
+
+          {erro && (
+            <p className="max-w-xl text-center text-sm text-destructive">{erro}</p>
+          )}
+        </div>
+      </main>
+
+      {/* Tabelas Modal */}
+      <TabelasModal
+        isOpen={isTabelasOpen}
+        onClose={() => {
+          setIsTabelasOpen(false);
+          setTabelasVisibleTabs(undefined);
+        }}
+        initialTab={tabelasInitialTab}
+        visibleTabs={tabelasVisibleTabs}
+      />
+
+      <ConfiguracoesModal
+        isOpen={isConfiguracoesOpen}
+        onClose={() => setIsConfiguracoesOpen(false)}
+        onSaved={async () => {
+          try {
+            const status = await fetchBackendStatus();
+            setChromeStatus(status.chromeStatus);
+          } catch {
+            setChromeStatus("erro");
+          }
+        }}
+        onChromeOpened={async () => {
+          try {
+            const status = await fetchBackendStatus();
+            setChromeStatus(status.chromeStatus);
+            setApiDisponivel(true);
+            setErroInicializacao("");
+          } catch {
+            setChromeStatus("erro");
+            setApiDisponivel(false);
+          }
+        }}
+        onOpenDatas={() => {
+          setTabelasInitialTab("datas-impostos");
+          setTabelasVisibleTabs(["datas-impostos"]);
+          setIsTabelasOpen(true);
+        }}
+      />
+    </div>
+  );
+}

@@ -1,0 +1,107 @@
+"""
+de_para_contratos.py
+Tabela de/para: SARF (código do contrato reformatado) → IG (código destino).
+
+Formato SARF:  contrato "00160/2020"  →  "202000160"  (ano + número 5 dígitos)
+O CSV contratos_de_para.csv deve ter pelo menos as colunas: SARF, IG
+"""
+import csv
+import logging
+import os
+import re
+
+_DIR        = os.path.dirname(os.path.abspath(__file__))
+_ARQUIVO    = os.path.join(_DIR, "DCF - CONTRATOS.csv")
+_cache = None   # type: dict | None  — compatível com Python 3.8+
+log = logging.getLogger(__name__)
+
+
+# ─── Formatação de código ─────────────────────────────────────────────────────
+
+def formatar_sarf(numero_contrato: str) -> str:
+    """
+    Converte número do contrato no padrão SARF.
+    Ex.: '00160/2020' → '202000160'
+         '160/2020'   → '202000160'
+    Regra: ano (4 dígitos) + número zero-preenchido (5 dígitos) = 9 dígitos
+    """
+    s = numero_contrato.strip()
+    m = re.match(r"(\d+)/(\d{4})$", s)
+    if m:
+        num = m.group(1).zfill(5)
+        ano = m.group(2)
+        return ano + num
+    # Já no formato SARF (9 dígitos numéricos)?
+    if re.match(r"^\d{9}$", s):
+        return s
+    return s
+
+
+# ─── Cache / carregamento ─────────────────────────────────────────────────────
+
+def _carregar() -> dict:
+    global _cache
+    if _cache is not None:
+        return _cache
+    _cache = {}
+    if not os.path.exists(_ARQUIVO):
+        return _cache
+    try:
+        with open(_ARQUIVO, encoding="utf-8-sig", newline="") as f:
+            # Linha 0 é instrução administrativa — pular antes de usar DictReader
+            primeira = f.readline()
+            # Se a primeira linha não contiver "SARF" como cabeçalho, ela é
+            # a linha de instrução e o DictReader usará a próxima como header.
+            # Se já for o cabeçalho (SARF presente), voltar ao início.
+            if "SARF" in primeira.upper():
+                f.seek(0)
+            reader = csv.DictReader(f)
+            for row in reader:
+                sarf = str(row.get("SARF", "")).strip()
+                ig   = str(row.get("IG",   "")).strip()
+                if sarf and re.match(r"^\d{9}$", sarf):
+                    _cache[sarf] = ig
+    except Exception as e:
+        log.exception("Erro ao carregar CSV de contratos: %s", e)
+    return _cache
+
+
+def recarregar():
+    """Invalida cache para forçar releitura do CSV."""
+    global _cache
+    _cache = None
+
+
+def obter_arquivo_contratos() -> str:
+    return _ARQUIVO
+
+
+# ─── Consulta pública ─────────────────────────────────────────────────────────
+
+def buscar_ig(sarf_code: str) -> str:
+    """
+    Retorna o código IG correspondente ao SARF.
+    Retorna '' se não encontrado.
+    """
+    tabela = _carregar()
+    return tabela.get(str(sarf_code).strip(), "")
+
+
+def buscar_ig_por_contrato(numero_contrato: str):
+    """
+    Recebe o número do contrato como extraído do PDF (ex.: '00160/2020')
+    e retorna (sarf_code, ig_code).
+    """
+    sarf = formatar_sarf(numero_contrato)
+    ig   = buscar_ig(sarf)
+    return sarf, ig
+
+
+# ─── CLI de teste ─────────────────────────────────────────────────────────────
+if __name__ == "__main__":
+    import sys
+    contrato = sys.argv[1] if len(sys.argv) > 1 else "00160/2020"
+    sarf, ig = buscar_ig_por_contrato(contrato)
+    print(f"Contrato : {contrato}")
+    print(f"SARF (DE): {sarf}")
+    print(f"IG   (PARA): {ig if ig else '— não encontrado no CSV —'}")
