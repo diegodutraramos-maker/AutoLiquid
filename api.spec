@@ -1,12 +1,31 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
+
+
+datas = [
+    ('configuracoes.json', '.'),
+    ('tabelas_config.json', '.'),
+    ('DCF - CONTRATOS.csv', '.'),
+]
+datas += collect_data_files('playwright', include_py_files=True)
+datas += copy_metadata('fastapi')
+datas += copy_metadata('uvicorn')
+datas += copy_metadata('pydantic')
+datas += copy_metadata('python-multipart')
+
+hiddenimports = []
+hiddenimports += collect_submodules('fastapi')
+hiddenimports += collect_submodules('uvicorn')
+hiddenimports += collect_submodules('playwright')
+hiddenimports += collect_submodules('multipart')
 
 a = Analysis(
     ['api.py'],
     pathex=[],
     binaries=[],
-    datas=[],
-    hiddenimports=[],
+    datas=datas,
+    hiddenimports=hiddenimports,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

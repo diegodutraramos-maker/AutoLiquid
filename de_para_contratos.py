@@ -7,11 +7,12 @@ O CSV contratos_de_para.csv deve ter pelo menos as colunas: SARF, IG
 """
 import csv
 import logging
-import os
 import re
+import shutil
 
-_DIR        = os.path.dirname(os.path.abspath(__file__))
-_ARQUIVO    = os.path.join(_DIR, "DCF - CONTRATOS.csv")
+from core.app_paths import CAMINHO_CONTRATOS, caminho_recurso
+
+_ARQUIVO = CAMINHO_CONTRATOS
 _cache = None   # type: dict | None  — compatível com Python 3.8+
 log = logging.getLogger(__name__)
 
@@ -44,10 +45,15 @@ def _carregar() -> dict:
     if _cache is not None:
         return _cache
     _cache = {}
-    if not os.path.exists(_ARQUIVO):
+    if not _ARQUIVO.exists():
+        recurso_padrao = caminho_recurso(_ARQUIVO.name)
+        if recurso_padrao.exists():
+            _ARQUIVO.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(recurso_padrao, _ARQUIVO)
+    if not _ARQUIVO.exists():
         return _cache
     try:
-        with open(_ARQUIVO, encoding="utf-8-sig", newline="") as f:
+        with _ARQUIVO.open(encoding="utf-8-sig", newline="") as f:
             # Linha 0 é instrução administrativa — pular antes de usar DictReader
             primeira = f.readline()
             # Se a primeira linha não contiver "SARF" como cabeçalho, ela é
@@ -73,7 +79,7 @@ def recarregar():
 
 
 def obter_arquivo_contratos() -> str:
-    return _ARQUIVO
+    return str(_ARQUIVO)
 
 
 # ─── Consulta pública ─────────────────────────────────────────────────────────

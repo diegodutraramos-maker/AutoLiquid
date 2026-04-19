@@ -1,9 +1,15 @@
 """Serviços de carregamento e persistência de configuração."""
 
 import json
+import shutil
 from typing import Any
 
-from core.app_paths import CAMINHO_CONFIG, CAMINHO_TABELAS, PORTA_CHROME
+from core.app_paths import (
+    CAMINHO_CONFIG,
+    CAMINHO_TABELAS,
+    PORTA_CHROME,
+    caminho_recurso,
+)
 
 
 CONFIG_APP_PADRAO = {
@@ -18,6 +24,12 @@ CONFIG_APP_PADRAO = {
 
 
 def carregar_json(caminho, padrao: Any):
+    if not caminho.exists():
+        recurso_padrao = caminho_recurso(caminho.name)
+        if recurso_padrao.exists():
+            caminho.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(recurso_padrao, caminho)
+
     if caminho.exists():
         with open(caminho, encoding="utf-8") as arquivo:
             return json.load(arquivo)
@@ -25,6 +37,7 @@ def carregar_json(caminho, padrao: Any):
 
 
 def salvar_json(caminho, dados: Any) -> None:
+    caminho.parent.mkdir(parents=True, exist_ok=True)
     with open(caminho, "w", encoding="utf-8") as arquivo:
         json.dump(dados, arquivo, indent=2, ensure_ascii=False)
 

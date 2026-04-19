@@ -69,14 +69,14 @@ jobs:
       - name: Build Python sidecar (macOS)
         if: runner.os == 'macOS'
         run: |
-          pyinstaller --onefile --name api api.py
+          pyinstaller api.spec
           mkdir -p src-tauri/binaries
           cp dist/api src-tauri/binaries/${{ matrix.sidecar-bin }}
 
       - name: Build Python sidecar (Windows)
         if: runner.os == 'Windows'
         run: |
-          pyinstaller --onefile --name api api.py
+          pyinstaller api.spec
           mkdir -p src-tauri/binaries
           cp dist/api.exe src-tauri/binaries/${{ matrix.sidecar-bin }}
 
