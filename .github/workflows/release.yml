@@ -38,6 +38,10 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
+          cache: "npm"
+          cache-dependency-path: |
+            package-lock.json
+            frontend/package-lock.json
 
       # ── Rust ────────────────────────────────────────────────────────────────
       - name: Setup Rust
@@ -55,9 +59,11 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: requirements.txt
 
       - name: Install Python dependencies
-        run: pip install -r requirements.txt pyinstaller
+        run: python -m pip install -r requirements.txt pyinstaller
 
       # ── Empacotar backend Python como binário nativo ─────────────────────────
       - name: Build Python sidecar (macOS)
@@ -76,10 +82,10 @@ jobs:
 
       # ── Frontend ─────────────────────────────────────────────────────────────
       - name: Install root dependencies (Tauri CLI)
-        run: npm install
+        run: npm ci --no-audit --prefer-offline
 
       - name: Install frontend dependencies
-        run: npm install
+        run: npm ci --no-audit --prefer-offline
         working-directory: frontend
 
       # ── Assinatura ad-hoc (macOS) — remove erro "danificado", permite abrir com botão direito ──
