@@ -14,12 +14,23 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-latest
-            args: "--target aarch64-apple-darwin"   # macOS Apple Silicon (M1/M2/M3)
+          - platform: macos-14
+            target: aarch64-apple-darwin
+            args: "--target aarch64-apple-darwin"
             python-arch: arm64
-          - platform: windows-latest
-            args: ""
+            sidecar-bin: api-aarch64-apple-darwin
+            signed-asset: AutoLiquid-macos-arm64.zip
+          - platform: macos-13
+            target: x86_64-apple-darwin
+            args: "--target x86_64-apple-darwin"
             python-arch: x64
+            sidecar-bin: api-x86_64-apple-darwin
+            signed-asset: AutoLiquid-macos-x64.zip
+          - platform: windows-latest
+            target: x86_64-pc-windows-msvc
+            args: "--target x86_64-pc-windows-msvc"
+            python-arch: x64
+            sidecar-bin: api-x86_64-pc-windows-msvc.exe
 
     runs-on: ${{ matrix.platform }}
 
@@ -38,7 +49,7 @@ jobs:
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
-          targets: ${{ matrix.platform == 'macos-latest' && 'aarch64-apple-darwin' || '' }}
+          targets: ${{ matrix.target }}
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
@@ -56,18 +67,18 @@ jobs:
 
       # ── Empacotar backend Python como binário nativo ─────────────────────────
       - name: Build Python sidecar (macOS)
-        if: matrix.platform == 'macos-latest'
+        if: runner.os == 'macOS'
         run: |
           pyinstaller --onefile --name api api.py
           mkdir -p src-tauri/binaries
-          cp dist/api src-tauri/binaries/api-aarch64-apple-darwin
+          cp dist/api src-tauri/binaries/${{ matrix.sidecar-bin }}
 
       - name: Build Python sidecar (Windows)
-        if: matrix.platform == 'windows-latest'
+        if: runner.os == 'Windows'
         run: |
           pyinstaller --onefile --name api api.py
           mkdir -p src-tauri/binaries
-          cp dist/api.exe src-tauri/binaries/api-x86_64-pc-windows-msvc.exe
+          cp dist/api.exe src-tauri/binaries/${{ matrix.sidecar-bin }}
 
       # ── Frontend ─────────────────────────────────────────────────────────────
       - name: Install root dependencies (Tauri CLI)
@@ -79,8 +90,8 @@ jobs:
 
       # ── Assinatura ad-hoc (macOS) — remove erro "danificado", permite abrir com botão direito ──
       - name: Ad-hoc sign Python sidecar (macOS)
-        if: matrix.platform == 'macos-latest'
-        run: codesign --force --deep --sign - src-tauri/binaries/api-aarch64-apple-darwin
+        if: runner.os == 'macOS'
+        run: codesign --force --deep --sign - src-tauri/binaries/${{ matrix.sidecar-bin }}
 
       # ── Build Tauri (gera .dmg e .msi/.exe) ─────────────────────────────────
       - name: Build Tauri app
@@ -94,3 +105,21 @@ jobs:
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
+
+      - name: Ad-hoc sign macOS app bundle
+        if: runner.os == 'macOS'
+        run: |
+          APP_PATH=$(find "src-tauri/target/${{ matrix.target }}/release/bundle/macos" -maxdepth 1 -name "*.app" -print -quit)
+          if [ -z "$APP_PATH" ]; then
+            echo "App bundle nao encontrado."
+            exit 1
+          fi
+
+          codesign --force --deep --sign - "$APP_PATH"
+          ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "${{ matrix.signed-asset }}"
+
+      - name: Upload signed macOS app bundle
+        if: runner.os == 'macOS'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ matrix.signed-asset }}

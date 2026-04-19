@@ -14,6 +14,7 @@ import {
   fetchBackendStatus,
   fetchProcessDates,
   openChromeSession,
+  waitForBackendReady,
   verificarAtualizacao,
   type TableKey,
   type ProcessDates,
@@ -81,38 +82,40 @@ export default function HomePage() {
     };
 
     const carregarTela = async () => {
-      const [savedDatesResult, backendStatusResult] = await Promise.allSettled([
-        fetchProcessDates(),
-        fetchBackendStatus(),
-      ]);
       const mensagensErro: string[] = [];
+      let backendDisponivel = false;
 
-      if (savedDatesResult.status === "fulfilled") {
+      try {
+        const backendStatus = await waitForBackendReady();
         if (!ativo) return;
-        setDates(savedDatesResult.value);
-      } else {
-        console.error("Erro ao carregar datas do processo:", savedDatesResult.reason);
-        mensagensErro.push(
-          savedDatesResult.reason instanceof Error
-            ? savedDatesResult.reason.message
-            : "Não foi possível carregar as datas salvas."
-        );
-      }
-
-      if (backendStatusResult.status === "fulfilled") {
-        if (!ativo) return;
-        setChromeStatus(backendStatusResult.value.chromeStatus);
+        setChromeStatus(backendStatus.chromeStatus);
         setApiDisponivel(true);
-      } else {
-        console.error("Erro ao consultar status do backend:", backendStatusResult.reason);
+        backendDisponivel = true;
+      } catch (error) {
+        console.error("Erro ao consultar status do backend:", error);
         mensagensErro.push(
-          backendStatusResult.reason instanceof Error
-            ? backendStatusResult.reason.message
+          error instanceof Error
+            ? error.message
             : "Não foi possível consultar o status do Chrome."
         );
         if (ativo) {
           setChromeStatus("erro");
           setApiDisponivel(false);
+        }
+      }
+
+      if (backendDisponivel) {
+        try {
+          const savedDates = await fetchProcessDates();
+          if (!ativo) return;
+          setDates(savedDates);
+        } catch (error) {
+          console.error("Erro ao carregar datas do processo:", error);
+          mensagensErro.push(
+            error instanceof Error
+              ? error.message
+              : "Não foi possível carregar as datas salvas."
+          );
         }
       }
 

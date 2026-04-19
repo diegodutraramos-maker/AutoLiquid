@@ -2,6 +2,8 @@ const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000"
 const DEFAULT_API_TIMEOUT_MS = 10000
 const EXECUTION_API_TIMEOUT_MS = 5 * 60 * 1000
+const DEFAULT_API_STARTUP_TIMEOUT_MS = 15000
+const DEFAULT_API_STARTUP_RETRY_MS = 750
 
 export type ChromeStatus = "pronto" | "carregando" | "erro"
 
@@ -180,6 +182,11 @@ interface ApiFetchOptions {
   signal?: AbortSignal
 }
 
+const delay = (ms: number) =>
+  new Promise<void>((resolve) => {
+    setTimeout(resolve, ms)
+  })
+
 function getNetworkErrorMessage(
   path: string,
   error: unknown,
@@ -190,11 +197,11 @@ function getNetworkErrorMessage(
   }
 
   if (error instanceof DOMException && error.name === "AbortError") {
-    return `A API não respondeu a tempo em ${API_BASE_URL}${path}. Verifique se o backend web está ativo.`
+    return `A API não respondeu a tempo em ${API_BASE_URL}${path}. Verifique se o backend interno/web terminou de iniciar.`
   }
 
   if (error instanceof TypeError) {
-    return `Não foi possível conectar à API em ${API_BASE_URL}. Inicie o backend web antes de usar esta tela.`
+    return `Não foi possível conectar à API em ${API_BASE_URL}. Aguarde alguns segundos; se persistir, reinicie o backend interno ou o backend web.`
   }
 
   if (error instanceof Error && error.message) {
@@ -267,6 +274,38 @@ async function apiFetch<T>(
 
 export async function fetchBackendStatus(): Promise<BackendStatus> {
   return apiFetch<BackendStatus>("/api/status")
+}
+
+export async function waitForBackendReady(
+  {
+    timeoutMs = DEFAULT_API_STARTUP_TIMEOUT_MS,
+    retryDelayMs = DEFAULT_API_STARTUP_RETRY_MS,
+  }: { timeoutMs?: number; retryDelayMs?: number } = {}
+): Promise<BackendStatus> {
+  const deadline = Date.now() + timeoutMs
+  let lastError: unknown
+
+  while (Date.now() <= deadline) {
+    try {
+      return await fetchBackendStatus()
+    } catch (error) {
+      lastError = error
+      if (Date.now() + retryDelayMs > deadline) {
+        break
+      }
+      await delay(retryDelayMs)
+    }
+  }
+
+  if (lastError instanceof Error) {
+    throw lastError
+  }
+
+  throw new Error(
+    `A API não ficou disponível em ${API_BASE_URL} dentro de ${Math.round(
+      timeoutMs / 1000
+    )} segundos.`
+  )
 }
 
 export async function openChromeSession(): Promise<OpenChromeResponse> {

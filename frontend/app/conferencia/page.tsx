@@ -42,6 +42,7 @@ import {
   fetchAppSettings,
   openChromeSession,
   pararExecucao,
+  waitForBackendReady,
   type Documento,
   type Deducao,
   type DocumentoProcessado,
@@ -227,9 +228,19 @@ function ConferenciaPageContent() {
         return;
       }
 
-      const [payloadResult, backendStatusResult, settingsResult] = await Promise.allSettled([
+      try {
+        const status = await waitForBackendReady();
+        if (!ativo) return;
+        setChromeStatus(status.chromeStatus);
+      } catch (error) {
+        console.error("Erro ao consultar status do Chrome:", error);
+        if (ativo) {
+          setChromeStatus("erro");
+        }
+      }
+
+      const [payloadResult, settingsResult] = await Promise.allSettled([
         fetchDocumentoProcessado(documentoId),
-        fetchBackendStatus(),
         fetchAppSettings(),
       ]);
 
@@ -245,16 +256,6 @@ function ConferenciaPageContent() {
               ? payloadResult.reason.message
               : "Erro ao carregar os dados do documento."
           );
-        }
-      }
-
-      if (backendStatusResult.status === "fulfilled") {
-        if (!ativo) return;
-        setChromeStatus(backendStatusResult.value.chromeStatus);
-      } else {
-        console.error("Erro ao consultar status do Chrome:", backendStatusResult.reason);
-        if (ativo) {
-          setChromeStatus("erro");
         }
       }
 
