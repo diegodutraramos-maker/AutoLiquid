@@ -40,16 +40,21 @@ def formatar_sarf(numero_contrato: str) -> str:
 
 # ─── Cache / carregamento ─────────────────────────────────────────────────────
 
+def _garantir_arquivo_contratos() -> None:
+    if _ARQUIVO.exists():
+        return
+
+    recurso_padrao = caminho_recurso(_ARQUIVO.name)
+    if recurso_padrao.exists():
+        _ARQUIVO.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(recurso_padrao, _ARQUIVO)
+
 def _carregar() -> dict:
     global _cache
     if _cache is not None:
         return _cache
     _cache = {}
-    if not _ARQUIVO.exists():
-        recurso_padrao = caminho_recurso(_ARQUIVO.name)
-        if recurso_padrao.exists():
-            _ARQUIVO.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(recurso_padrao, _ARQUIVO)
+    _garantir_arquivo_contratos()
     if not _ARQUIVO.exists():
         return _cache
     try:
@@ -79,6 +84,7 @@ def recarregar():
 
 
 def obter_arquivo_contratos() -> str:
+    _garantir_arquivo_contratos()
     return str(_ARQUIVO)
 
 

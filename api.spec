@@ -7,6 +7,7 @@ datas = [
     ('configuracoes.json', '.'),
     ('tabelas_config.json', '.'),
     ('DCF - CONTRATOS.csv', '.'),
+    ('src-tauri/tauri.conf.json', 'src-tauri'),
 ]
 datas += collect_data_files('playwright', include_py_files=True)
 datas += copy_metadata('fastapi')

@@ -1800,6 +1800,67 @@ def _extrair_pdid_de_ids(ids_existentes: set) -> str:
     return ""
 
 
+def _coletar_ids_predoc_do_did(pagina, did: str, apenas_visiveis: bool = False) -> list[str]:
+    """Coleta IDs `sfpredoc*` pertencentes ao bloco da dedução informada.
+
+    O portal mantém vários painéis de dedução simultaneamente no DOM. Quando
+    usamos uma busca global, é fácil capturar o `pdid` da dedução anterior e
+    preencher o Pré-Doc errado a partir da 4ª NF. Por isso a coleta fica
+    ancorada no bloco visível do `did` atual.
+    """
+    try:
+        return pagina.evaluate(
+            """({ deducaoId, apenasVisiveis }) => {
+                const prefixos = [
+                    'sfpredoccodrecurso', 'sfpredocreferencia', 'sfpredocnumref',
+                    'sfpredoctxtprocesso', 'sfpredocdtprdoapuracao', 'sfpredoccodmuninf',
+                    'sfpredocnumnf', 'sfpredocdtemisnf', 'sfpredocvlrnf',
+                    'sfpredoctxtobser', 'sfpredoccodugtmdrserv', 'sfpredocnumaliqnf',
+                ];
+                const visivel = (el) => {
+                    if (!el) return false;
+                    const r = el.getBoundingClientRect();
+                    if (r.width === 0 && r.height === 0) return false;
+                    const s = window.getComputedStyle(el);
+                    return s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0';
+                };
+                const coletar = (root) => {
+                    if (!root) return [];
+                    const ids = [];
+                    for (const el of root.querySelectorAll('[id]')) {
+                        const id = String(el.id || '');
+                        if (!prefixos.some((p) => id.startsWith(p))) continue;
+                        if (apenasVisiveis && !visivel(el)) continue;
+                        ids.push(id);
+                    }
+                    return ids;
+                };
+
+                const ancora =
+                    document.getElementById(`confirma-dados-deducao-${deducaoId}`)
+                    || document.getElementById(`aba-deducao${deducaoId}`)
+                    || document.getElementById(`sfdeducaocodsit${deducaoId}`)
+                    || document.getElementById(`sfdeducaovlr${deducaoId}`);
+
+                let nivel = ancora;
+                for (let i = 0; i < 12 && nivel; i += 1) {
+                    const ids = coletar(nivel);
+                    if (ids.length) return ids;
+                    nivel = nivel.parentElement;
+                }
+                return [];
+            }""",
+            {"deducaoId": did, "apenasVisiveis": apenas_visiveis},
+        ) or []
+    except Exception:
+        return []
+
+
+def _obter_pdid_do_did(pagina, did: str, apenas_visiveis: bool = False) -> str:
+    """Extrai o `pdid` associado ao bloco da dedução atual."""
+    return _extrair_pdid_de_ids(set(_coletar_ids_predoc_do_did(pagina, did, apenas_visiveis)))
+
+
 def _abrir_predoc_resiliente(pagina, did: str, erros: list) -> str:
     """Abre o Pré-Doc clicando no '+', detecta o pdid real dos campos que aparecem
     e retorna-o como string.  Retorna '' em caso de falha.
@@ -1810,54 +1871,24 @@ def _abrir_predoc_resiliente(pagina, did: str, erros: list) -> str:
     """
     try:
         # ── 1. Captura IDs sfpredoc* já existentes no DOM ────────────────────
-        ids_antes: list = pagina.evaluate(
-            """() => {
-                const prefixos = [
-                    'sfpredoccodrecurso', 'sfpredocreferencia', 'sfpredocnumref',
-                    'sfpredoctxtprocesso', 'sfpredocdtprdoapuracao', 'sfpredoccodmuninf',
-                    'sfpredocnumnf', 'sfpredocdtemisnf', 'sfpredocvlrnf',
-                    'sfpredoctxtobser', 'sfpredoccodugtmdrserv', 'sfpredocnumaliqnf',
-                ];
-                const ids = [];
-                for (const el of document.querySelectorAll('[id]')) {
-                    const id = String(el.id || '');
-                    if (prefixos.some(p => id.startsWith(p))) ids.push(id);
-                }
-                return ids;
-            }"""
-        ) or []
+        ids_antes = _coletar_ids_predoc_do_did(pagina, did, apenas_visiveis=False)
         ids_antes_set = set(ids_antes)
 
         # ── 2. Verifica se o Pré-Doc já está aberto (com campos VISÍVEIS) ──────
         # Para DDF025 os IDs sfpredoc* já existem no DOM desde o carregamento
         # da página (mas ficam ocultos). Só consideramos "aberto" se ao menos
         # um dos campos principais estiver visível na tela.
-        pdid_existente = _extrair_pdid_de_ids(ids_antes_set)
+        pdid_existente = _obter_pdid_do_did(pagina, did, apenas_visiveis=True)
         if pdid_existente:
-            campo_visivel = pagina.evaluate(
-                """(pdid) => {
-                    const visivel = (el) => {
-                        if (!el) return false;
-                        const r = el.getBoundingClientRect();
-                        if (r.width === 0 && r.height === 0) return false;
-                        const s = window.getComputedStyle(el);
-                        return s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0';
-                    };
-                    const prefixos = [
-                        'sfpredoctxtprocesso', 'sfpredocnumref',
-                        'sfpredocdtprdoapuracao', 'sfpredoctxtobser',
-                        'sfpredoccodrecurso',
-                    ];
-                    return prefixos.some(p => visivel(document.getElementById(p + pdid)));
-                }""",
-                pdid_existente,
-            )
-            if campo_visivel:
-                log.debug("Pré-Doc já aberto e visível; pdid=%s", pdid_existente)
-                return pdid_existente
+            log.debug("Pré-Doc já aberto e visível no bloco did=%s; pdid=%s", did, pdid_existente)
+            return pdid_existente
+        if ids_antes_set:
+            pdid_existente = _extrair_pdid_de_ids(ids_antes_set)
+        if pdid_existente:
             # IDs existem mas ocultos (DDF025) → ainda precisa clicar no "+"
             log.debug(
-                "IDs sfpredoc encontrados (pdid=%s) mas campos ocultos → clicando no '+'.",
+                "IDs sfpredoc do did=%s encontrados (pdid=%s) mas campos ocultos → clicando no '+'.",
+                did,
                 pdid_existente,
             )
 
@@ -1906,51 +1937,7 @@ def _abrir_predoc_resiliente(pagina, did: str, erros: list) -> str:
                     document.querySelectorAll('button, a, span, i, [role="button"]')
                 );
 
-                // ── Estratégia 0 (mais confiável): cabeçalho "Pré-Doc" → botão "+" vizinho ──
-                // Percorre todos os elementos visíveis que contêm "Pré-Doc" (ou "Pre-Doc")
-                // e busca o botão "+" imediatamente dentro do mesmo bloco.
-                // Esta é a estratégia prioritária porque "Pré-Doc" é um label único na página.
-                const cabecalhosPredoc = Array.from(
-                    document.querySelectorAll('h1,h2,h3,h4,h5,h6,div,span,td,th,label,strong,p,caption')
-                ).filter((el) => {
-                    if (!visivel(el)) return false;
-                    const txt = normalizar(el.textContent || el.getAttribute('title') || '');
-                    return /^pr[eé].?doc$/i.test(txt) || txt === 'pr\u00e9-doc' || txt === 'pre-doc';
-                });
-                for (const cab of cabecalhosPredoc.reverse()) {
-                    // Sobe até 4 níveis em busca do bloco contenedor
-                    let bloco = cab;
-                    for (let i = 0; i < 4; i++) {
-                        bloco = bloco.parentElement;
-                        if (!bloco) break;
-                        const btnMais = Array.from(
-                            bloco.querySelectorAll('button, a, span, i, [role="button"]')
-                        ).find((el) => {
-                            const txt = normalizar(el.textContent || '');
-                            return visivel(el) && (
-                                txt === '+'
-                                || el.querySelector?.('.fa-plus, .glyphicon-plus, [class*="plus"]')
-                                || normalizar(el.getAttribute?.('onclick') || '').includes('predoc')
-                                || normalizar(el.className || '').includes('predoc')
-                            );
-                        });
-                        if (btnMais && clicar(btnMais)) return 'predoc-header';
-                    }
-                }
-
-                // ── Estratégia 1: onclick contém "predoc" (case-insensitive) ──
-                const porOnclickPredoc = candidatos.find(
-                    (el) => visivel(el) && normalizar(el.getAttribute('onclick') || '').includes('predoc')
-                );
-                if (clicar(porOnclickPredoc)) return 'onclick-predoc';
-
-                // ── Estratégia 2: onclick contém o did exato ──
-                const porOnclick = candidatos.find(
-                    (el) => visivel(el) && String(el.getAttribute('onclick') || '').includes(deducaoId)
-                );
-                if (clicar(porOnclick)) return 'onclick-did';
-
-                // ── Estratégia 3: traversal multi-nível a partir do container da dedução ──
+                // ── Estratégia 0 (mais segura): procura o botão dentro do container do did ──
                 // Usa confirma-dados-deducao-{did} como âncora e sobe até 12 níveis
                 // buscando o botão Pré-Doc DENTRO de cada container intermediário.
                 // Mais robusto que .closest() para DOM pesado com múltiplos painéis.
@@ -1973,6 +1960,46 @@ def _abrir_predoc_resiliente(pagina, did: str, erros: list) -> str:
                             });
                             if (btn && clicar(btn)) return 'container-predoc-v2';
                         }
+                    }
+                }
+
+                // ── Estratégia 1: onclick contém "predoc" (case-insensitive) ──
+                const porOnclickPredoc = candidatos.find(
+                    (el) => visivel(el) && normalizar(el.getAttribute('onclick') || '').includes('predoc')
+                );
+                if (clicar(porOnclickPredoc)) return 'onclick-predoc';
+
+                // ── Estratégia 2: onclick contém o did exato ──
+                const porOnclick = candidatos.find(
+                    (el) => visivel(el) && String(el.getAttribute('onclick') || '').includes(deducaoId)
+                );
+                if (clicar(porOnclick)) return 'onclick-did';
+
+                // ── Estratégia 3: cabeçalho "Pré-Doc" → botão "+" vizinho ─────
+                const cabecalhosPredoc = Array.from(
+                    document.querySelectorAll('h1,h2,h3,h4,h5,h6,div,span,td,th,label,strong,p,caption')
+                ).filter((el) => {
+                    if (!visivel(el)) return false;
+                    const txt = normalizar(el.textContent || el.getAttribute('title') || '');
+                    return /^pr[eé].?doc$/i.test(txt) || txt === 'pr\u00e9-doc' || txt === 'pre-doc';
+                });
+                for (const cab of cabecalhosPredoc.reverse()) {
+                    let bloco = cab;
+                    for (let i = 0; i < 4; i++) {
+                        bloco = bloco.parentElement;
+                        if (!bloco) break;
+                        const btnMais = Array.from(
+                            bloco.querySelectorAll('button, a, span, i, [role="button"]')
+                        ).find((el) => {
+                            const txt = normalizar(el.textContent || '');
+                            return visivel(el) && (
+                                txt === '+'
+                                || el.querySelector?.('.fa-plus, .glyphicon-plus, [class*="plus"]')
+                                || normalizar(el.getAttribute?.('onclick') || '').includes('predoc')
+                                || normalizar(el.className || '').includes('predoc')
+                            );
+                        });
+                        if (btnMais && clicar(btnMais)) return 'predoc-header';
                     }
                 }
 
@@ -2007,10 +2034,8 @@ def _abrir_predoc_resiliente(pagina, did: str, erros: list) -> str:
         # ── 4. Aguarda campos sfpredoc* ficarem VISÍVEIS no DOM ──────────────
         # Não esperamos novos IDs (em DDF025 os elementos já existem no DOM
         # mas ficam ocultos até o "+" ser clicado). Detectamos pela visibilidade.
-        # Nota: wait_for_function retorna um JSHandle — usar .json_value() para obter a lista.
-        _handle = pagina.wait_for_function(
-            """(idsAntes) => {
-                const antesSet = new Set(idsAntes);
+        pagina.wait_for_function(
+            """(deducaoId) => {
                 const prefixos = [
                     'sfpredoccodrecurso', 'sfpredocreferencia', 'sfpredocnumref',
                     'sfpredoctxtprocesso', 'sfpredocdtprdoapuracao', 'sfpredoccodmuninf',
@@ -2024,21 +2049,26 @@ def _abrir_predoc_resiliente(pagina, did: str, erros: list) -> str:
                     const s = window.getComputedStyle(el);
                     return s.display !== 'none' && s.visibility !== 'hidden' && s.opacity !== '0';
                 };
-                const encontrados = [];
-                for (const el of document.querySelectorAll('[id]')) {
-                    const id = String(el.id || '');
-                    if (!prefixos.some(p => id.startsWith(p))) continue;
-                    // Aceita: novo ID OU ID já existente que ficou visível
-                    if (!antesSet.has(id) || visivel(el)) {
-                        encontrados.push(id);
-                    }
+                const ancora =
+                    document.getElementById(`confirma-dados-deducao-${deducaoId}`)
+                    || document.getElementById(`aba-deducao${deducaoId}`)
+                    || document.getElementById(`sfdeducaocodsit${deducaoId}`)
+                    || document.getElementById(`sfdeducaovlr${deducaoId}`);
+                let nivel = ancora;
+                for (let i = 0; i < 12 && nivel; i += 1) {
+                    const encontrados = Array.from(nivel.querySelectorAll('[id]')).filter((el) => {
+                        const id = String(el.id || '');
+                        return prefixos.some((p) => id.startsWith(p)) && visivel(el);
+                    });
+                    if (encontrados.length) return true;
+                    nivel = nivel.parentElement;
                 }
-                return encontrados.length > 0 ? encontrados : null;
+                return false;
             }""",
-            arg=ids_antes,
+            arg=did,
             timeout=15000,
         )
-        ids_depois: list = _handle.json_value() if _handle else []
+        ids_depois = _coletar_ids_predoc_do_did(pagina, did, apenas_visiveis=True)
 
         pdid = _extrair_pdid_de_ids(set(ids_depois or []))
         if not pdid:

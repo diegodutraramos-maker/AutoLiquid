@@ -2,6 +2,8 @@
 comprasnet_dados_basicos.py
 Preenche e valida a aba Dados Básicos.
 """
+from collections import Counter
+from decimal import Decimal, InvalidOperation
 import re
 import time
 
@@ -19,6 +21,101 @@ from comprasnet_base import (
 def _normalizar_numero_documento(valor: str) -> str:
     digitos = "".join(ch for ch in str(valor or "") if ch.isdigit())
     return digitos.lstrip("0") or "0"
+
+
+def _decimal_normalizado(valor: str) -> Decimal:
+    texto = normalizar_valor(valor)
+    if not texto:
+        return Decimal("0")
+    try:
+        return Decimal(texto)
+    except (InvalidOperation, ValueError):
+        return Decimal("0")
+
+
+def _comparar_documentos_origem(
+    notas_pdf: list[dict],
+    linhas_web: list[tuple[str, str, str]],
+) -> list[str]:
+    erros: list[str] = []
+
+    docs_pdf = [
+        {
+            "numero": _normalizar_numero_documento(nota.get("Número da Nota", "")),
+            "emissao": normalizar_data(nota.get("Data de Emissão", "")),
+            "valor": normalizar_valor(nota.get("Valor", "")),
+        }
+        for nota in notas_pdf
+        if str(nota.get("Número da Nota", "") or "").strip()
+    ]
+
+    docs_web = [
+        {
+            "emissao": normalizar_data(emissao),
+            "numero": _normalizar_numero_documento(numero),
+            "valor": normalizar_valor(valor),
+        }
+        for emissao, numero, valor in linhas_web
+        if str(numero or "").strip() or str(valor or "").strip()
+    ]
+
+    if not docs_pdf:
+        return erros
+
+    if not docs_web:
+        erros.append(
+            f"Documentos de origem: Web=0 linha(s) | PDF={len(docs_pdf)} NF(s)."
+        )
+        return erros
+
+    if len(docs_web) != len(docs_pdf):
+        erros.append(
+            f"Quantidade de documentos de origem divergente: Web={len(docs_web)} | PDF={len(docs_pdf)}."
+        )
+
+    numeros_pdf = Counter(doc["numero"] for doc in docs_pdf)
+    numeros_web = Counter(doc["numero"] for doc in docs_web)
+    faltando_na_web = list((numeros_pdf - numeros_web).elements())
+    sobrando_na_web = list((numeros_web - numeros_pdf).elements())
+    if faltando_na_web:
+        erros.append(
+            "NF(s) ausente(s) nos documentos de origem da Web: "
+            + ", ".join(faltando_na_web)
+        )
+    if sobrando_na_web:
+        erros.append(
+            "NF(s) inesperada(s) nos documentos de origem da Web: "
+            + ", ".join(sobrando_na_web)
+        )
+
+    total_pdf = sum((_decimal_normalizado(doc["valor"]) for doc in docs_pdf), Decimal("0"))
+    total_web = sum((_decimal_normalizado(doc["valor"]) for doc in docs_web), Decimal("0"))
+    if total_pdf != total_web:
+        erros.append(
+            "Valor total dos documentos de origem divergente: "
+            f"Web={total_web:.2f} | PDF={total_pdf:.2f}."
+        )
+
+    docs_web_por_numero = {}
+    for doc in docs_web:
+        docs_web_por_numero.setdefault(doc["numero"], []).append(doc)
+
+    for doc_pdf in docs_pdf:
+        candidatos = docs_web_por_numero.get(doc_pdf["numero"], [])
+        if not candidatos:
+            continue
+
+        doc_web = candidatos.pop(0)
+        if doc_web["emissao"] and doc_pdf["emissao"] and doc_web["emissao"] != doc_pdf["emissao"]:
+            erros.append(
+                f"NF {doc_pdf['numero']} — Emissão: Web={doc_web['emissao']} | PDF={doc_pdf['emissao']}"
+            )
+        if doc_web["valor"] and doc_pdf["valor"] and doc_web["valor"] != doc_pdf["valor"]:
+            erros.append(
+                f"NF {doc_pdf['numero']} — Valor: Web={doc_web['valor']} | PDF={doc_pdf['valor']}"
+            )
+
+    return erros
 
 
 def _documentos_para_observacao(dados_extraidos: dict) -> list[tuple[str, str]]:
@@ -535,17 +632,7 @@ def executar(dados_extraidos, data_vencimento_usuario, *, pagina=None, playwrigh
                 erros.append(f"Ateste não verificado: {e}")
 
             linhas_tabela = _coletar_linhas_notas_basicos(pagina)
-            for i, nota in enumerate(notas):
-                ew, nw, vw = linhas_tabela[i] if i < len(linhas_tabela) else ("", "", "")
-                ep = normalizar_data(nota.get('Data de Emissão', ''))
-                np_ = nota.get('Número da Nota', '').strip()
-                vp = nota.get('Valor', '')
-                if ew and normalizar_data(ew) != ep:
-                    erros.append(f"NF {np_} — Emissão: Web={ew} PDF={ep}")
-                if nw and _normalizar_numero_documento(nw) != _normalizar_numero_documento(np_):
-                    erros.append(f"NF {np_} — Nº Doc: Web={nw} PDF={np_}")
-                if vw and normalizar_valor(vw) != normalizar_valor(vp):
-                    erros.append(f"NF {np_} — Valor: Web={vw} PDF={vp}")
+            erros.extend(_comparar_documentos_origem(notas, linhas_tabela))
 
         # 5. Confirmar Dados Básicos
         print("[5] Confirmando Dados Básicos...")
@@ -558,7 +645,8 @@ def executar(dados_extraidos, data_vencimento_usuario, *, pagina=None, playwrigh
             erros.append(f"Erro ao clicar em Confirmar Dados Básicos: {e}")
 
         if erros:
-            return {"status": "alerta", "mensagem": "\n".join(erros)}
+            mensagem = "Dados Básicos requer conferência manual:\n" + "\n".join(erros)
+            return {"status": "alerta", "mensagem": mensagem}
 
         return {"status": "sucesso", "mensagem": "Dados Básicos preenchidos e confirmados!"}
 

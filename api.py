@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 import logging
 import os
 import shutil
@@ -10,6 +11,7 @@ import sys
 import tempfile
 import inspect
 from copy import deepcopy
+from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
@@ -33,8 +35,45 @@ from services.web_config_service import (
     salvar_tabela_web,
 )
 
-app = FastAPI(title="Automacao DCF API", version="1.0.0")
 log = logging.getLogger(__name__)
+
+DEFAULT_APP_VERSION = "1.0.14"
+
+
+def _candidatos_tauri_conf() -> list[Path]:
+    base_dir = Path(__file__).resolve().parent
+    candidatos = [
+        base_dir / "src-tauri" / "tauri.conf.json",
+        base_dir / "tauri.conf.json",
+    ]
+    meipass = getattr(sys, "_MEIPASS", "")
+    if meipass:
+        bundle_dir = Path(meipass)
+        candidatos.extend(
+            [
+                bundle_dir / "src-tauri" / "tauri.conf.json",
+                bundle_dir / "tauri.conf.json",
+            ]
+        )
+    return candidatos
+
+
+def _obter_app_version() -> str:
+    for caminho in _candidatos_tauri_conf():
+        try:
+            if not caminho.exists():
+                continue
+            config = json.loads(caminho.read_text(encoding="utf-8"))
+            versao = str(config.get("version", "") or "").strip().lstrip("v")
+            if versao:
+                return versao
+        except Exception:
+            continue
+    return DEFAULT_APP_VERSION
+
+
+APP_VERSION = _obter_app_version()
+app = FastAPI(title="Automacao DCF API", version=APP_VERSION)
 
 app.add_middleware(
     CORSMiddleware,
@@ -893,7 +932,6 @@ def atualizar_tabela_web(table_key: str, payload: TableSaveRequest) -> dict[str,
 # VERSÃO / ATUALIZAÇÃO
 # ─────────────────────────────────────────────────────────────────────────────
 
-APP_VERSION = "1.0.5"
 _GITHUB_REPO  = "diegodutraramos-maker/AutoLiquid"
 _GITHUB_API   = f"https://api.github.com/repos/{_GITHUB_REPO}/releases/latest"
 _RELEASES_URL = f"https://github.com/{_GITHUB_REPO}/releases/latest"
