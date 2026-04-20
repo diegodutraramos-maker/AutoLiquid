@@ -738,8 +738,8 @@ def executar(dados_extraidos, data_vencimento_usuario, *, pagina=None, playwrigh
                 erros.append(f"Ateste não verificado: {e}")
 
             try:
-                cnpj_pdf = str(dados_extraidos.get("CNPJ", "") or "").strip()
-                cnpj_web = _ler_codigo_credor_basicos(pagina)
+                cnpj_pdf = re.sub(r"\D", "", str(dados_extraidos.get("CNPJ", "") or ""))
+                cnpj_web = re.sub(r"\D", "", str(_ler_codigo_credor_basicos(pagina) or ""))
                 if cnpj_pdf and cnpj_web and cnpj_web != cnpj_pdf:
                     erros.append(f"Código do Credor: Web={cnpj_web} | PDF={cnpj_pdf}")
             except Exception as e:
