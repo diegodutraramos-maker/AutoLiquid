@@ -1,42 +1,22 @@
-import time
-
 import requests
 
-_TIMEOUT_SEGUNDOS = 10
-_MAX_TENTATIVAS = 3
-_ESPERA_RETRY_SEGUNDOS = 5
+# Timeout curto — não pode bloquear o upload do PDF
+_TIMEOUT_SEGUNDOS = 5
 
 
 def verificar_simples_nacional(cnpj_limpo):
-    print(f"Consultando o CNPJ {cnpj_limpo} na base de dados...")
+    """Consulta Simples Nacional via BrasilAPI. Retorna True/False/None (falha)."""
     url = f"https://brasilapi.com.br/api/cnpj/v1/{cnpj_limpo}"
-
-    for tentativa in range(1, _MAX_TENTATIVAS + 1):
-        print(f"Tentativa {tentativa}/{_MAX_TENTATIVAS}...")
-        try:
-            resposta = requests.get(url, timeout=_TIMEOUT_SEGUNDOS)
-            if resposta.status_code == 200:
-                dados = resposta.json()
-                nome_empresa = dados.get('razao_social', 'Nome não encontrado')
-                optante_simples = dados.get('opcao_pelo_simples')
-                print(f"Empresa: {nome_empresa}")
-                if optante_simples:
-                    print("Situação: É optante pelo Simples Nacional!")
-                    return True
-                else:
-                    print("Situação: NÃO é optante pelo Simples Nacional.")
-                    return False
-            else:
-                print(f"Erro ao consultar o CNPJ. Código: {resposta.status_code}")
-                if tentativa < _MAX_TENTATIVAS:
-                    print(f"Aguardando {_ESPERA_RETRY_SEGUNDOS} segundos antes de tentar novamente...")
-                    time.sleep(_ESPERA_RETRY_SEGUNDOS)
-        except Exception as e:
-            print(f"Erro de conexão: {e}")
-            if tentativa < _MAX_TENTATIVAS:
-                print(f"Aguardando {_ESPERA_RETRY_SEGUNDOS} segundos antes de tentar novamente...")
-                time.sleep(_ESPERA_RETRY_SEGUNDOS)
-
+    try:
+        resposta = requests.get(url, timeout=_TIMEOUT_SEGUNDOS)
+        if resposta.status_code == 200:
+            dados = resposta.json()
+            optante = dados.get("opcao_pelo_simples")
+            print(f"  CNPJ {cnpj_limpo}: {dados.get('razao_social','')} — Simples={optante}")
+            return bool(optante)
+        print(f"  CNPJ lookup: HTTP {resposta.status_code}")
+    except Exception as e:
+        print(f"  CNPJ lookup falhou (ignorado): {e}")
     return None
 
 

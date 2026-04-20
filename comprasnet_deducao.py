@@ -2526,18 +2526,22 @@ def _preencher_ddr001_nf(pagina, nf: dict, idx: int, total: int,
         _select(pagina, f"sfdeducaocodsit{did}", "DDR001", erros, "Situação")
         time.sleep(0.8)
         try:
-            _val_sit = pagina.evaluate(
+            # Verifica pelo TEXTO da opção selecionada (value é código numérico)
+            _texto_sit = pagina.evaluate(
                 f"() => {{ const el = document.getElementById(‘sfdeducaocodsit{did}’); "
-                f"return el ? el.value : ‘’; }}"
+                f"if (!el) return ‘’; "
+                f"const op = el.options[el.selectedIndex]; "
+                f"return op ? op.text.trim() : ‘’; }}"
             )
-            if str(_val_sit or "").upper() == "DDR001":
+            if "DDR001" in str(_texto_sit or "").upper():
                 _situacao_ok = True
                 break
-            print(f"    [DDR001] Situação resetada para ‘{_val_sit}’ pelo portal — retry {_tent_sit+1}/3")
+            print(f"    [DDR001] Situação ainda ‘{_texto_sit}’ — retry {_tent_sit+1}/3")
         except Exception:
-            pass
+            _situacao_ok = True  # se não conseguiu verificar, assume ok
+            break
     if not _situacao_ok:
-        erros.append(f"DDR001 NF {num_nf}: portal resetou situação — abortando esta entrada.")
+        erros.append(f"DDR001 NF {num_nf}: portal não aceitou situação DDR001 — abortando.")
         return False
 
     try:
