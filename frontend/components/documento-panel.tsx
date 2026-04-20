@@ -32,12 +32,12 @@ export function DocumentoPanel({ documento, resumo: _resumo }: DocumentoPanelPro
   );
 
   return (
-    <GlassCard className="p-6">
-      <h3 className="mb-4 text-xs font-medium uppercase tracking-wider text-primary">
+    <GlassCard className="p-7 md:p-8">
+      <h3 className="mb-5 text-xs font-medium uppercase tracking-wider text-primary">
         Documento
       </h3>
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
+      <div className="grid gap-5 sm:grid-cols-2 min-[1180px]:grid-cols-1 2xl:grid-cols-2">
         <InfoRow label="CNPJ" value={formatCnpj(documento.cnpj)} />
         <InfoRow label="Processo" value={documento.processo} />
         <InfoRow label="Sol. Pagamento" value={documento.solPagamento} />

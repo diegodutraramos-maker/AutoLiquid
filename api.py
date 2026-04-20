@@ -113,6 +113,7 @@ class TableSaveRequest(BaseModel):
 
 class WebConfigPayload(BaseModel):
     chromePorta: int
+    navegador: str = "chrome"
     perguntarLimparMes: bool
     temaWeb: str = "light"
     nivelLog: str = "desenvolvedor"
@@ -772,6 +773,26 @@ def obter_documento(doc_id: str) -> dict[str, Any]:
     if doc_id not in DOCUMENTOS_PROCESSADOS:
         raise HTTPException(status_code=404, detail="Documento não encontrado.")
     return _montar_documento_processado(doc_id, DOCUMENTOS_PROCESSADOS[doc_id])
+
+
+@app.post("/api/documentos/{doc_id}/salvar-preenchimento")
+def salvar_preenchimento_documento(doc_id: str, payload: ExecucaoPayload) -> dict[str, Any]:
+    if doc_id not in DOCUMENTOS_PROCESSADOS:
+        raise HTTPException(status_code=404, detail="Documento não encontrado.")
+
+    doc = DOCUMENTOS_PROCESSADOS[doc_id]
+    if doc.get("is_running"):
+        raise HTTPException(status_code=409, detail="Não é possível salvar durante uma execução em andamento.")
+
+    doc["lf_numero"] = payload.lfNumero
+    doc["ugr_numero"] = payload.ugrNumero
+    doc["vencimento_documento"] = payload.vencimentoDocumento
+    doc["usar_conta_pdf"] = payload.usarContaPdf
+    doc["conta_banco"] = payload.contaBanco
+    doc["conta_agencia"] = payload.contaAgencia
+    doc["conta_conta"] = payload.contaConta
+
+    return _montar_documento_processado(doc_id, doc)
 
 
 @app.post("/api/documentos/{doc_id}/executar-todas")

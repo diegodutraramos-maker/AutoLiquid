@@ -11,6 +11,7 @@ import { TabelasModal } from "@/components/tabelas-modal";
 import { ConfiguracoesModal } from "@/components/configuracoes-modal";
 import { GlassButton } from "@/components/glass-card";
 import {
+  abrirUrl,
   delay,
   type BackendStartupProgress,
   MOCK_PROCESS_DATES,
@@ -25,6 +26,9 @@ import {
   type VersaoInfo,
   uploadPDF,
 } from "@/lib/data";
+
+const FILA_TRABALHO_URL =
+  "https://docs.google.com/spreadsheets/d/1O2Ft4Ioy3_t4bKmPQ38d56UhHY2TBHfPI6kTkNkmy-4/edit?gid=0#gid=0";
 
 const INITIAL_STARTUP_STATE: BackendStartupProgress = {
   phase: "booting-ui",
@@ -350,6 +354,7 @@ export default function HomePage() {
           setIsTabelasOpen(true);
         }}
         onOpenConfiguracoes={() => setIsConfiguracoesOpen(true)}
+        onOpenFilaTrabalho={() => void abrirUrl(FILA_TRABALHO_URL)}
         onOpenChrome={handleAbrirChrome}
         chromeActionDisabled={abrindoChrome || !apiDisponivel}
       />

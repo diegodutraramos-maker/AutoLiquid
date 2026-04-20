@@ -20,6 +20,15 @@ import { GlassCard, GlassButton } from "./glass-card";
 import type { Deducao, EtapaExecucao } from "@/lib/data";
 import { cn } from "@/lib/utils";
 
+const EXECUTION_GREEN_BUTTON_CLASS =
+  "border-[color:oklch(0.58_0.12_160)] bg-[color:oklch(0.58_0.12_160)] text-white hover:bg-[color:oklch(0.54_0.11_160)] hover:border-[color:oklch(0.54_0.11_160)]";
+const EXECUTION_GREEN_BADGE_CLASS =
+  "border-[color:color-mix(in_oklch,var(--success)_22%,transparent)] bg-[color:color-mix(in_oklch,var(--success)_16%,transparent)] text-[color:oklch(0.38_0.08_160)]";
+const EXECUTION_ERROR_BADGE_CLASS =
+  "border-destructive/30 bg-destructive/12 text-[color:oklch(0.42_0.15_25)]";
+const EXECUTION_SIAFI_OUTLINE_CLASS =
+  "border-[color:oklch(0.72_0.12_85)] bg-transparent text-[color:oklch(0.48_0.09_85)] hover:bg-[color:color-mix(in_oklch,oklch(0.72_0.12_85)_10%,white)]";
+
 interface FilaExecucaoProps {
   etapas: EtapaExecucao[];
   deducoes?: Deducao[];
@@ -45,18 +54,18 @@ const iconMap: Record<string, React.ComponentType<{ className?: string }>> = {
   Building,
 };
 
-function getStatusColor(status: EtapaExecucao["status"], index: number) {
+function getStepCircleClass(status: EtapaExecucao["status"], isAtiva: boolean) {
+  if (isAtiva || status === "executando") {
+    return "bg-primary text-primary-foreground";
+  }
+
   switch (status) {
     case "concluido":
-      return "bg-success";
-    case "executando":
-      return "bg-primary";
+      return "bg-[color:oklch(0.58_0.12_160)] text-white";
     case "erro":
-      return "bg-destructive";
+      return "bg-destructive text-white";
     default:
-      // Different colors for each step when aguardando
-      const colors = ["bg-primary", "bg-warning", "bg-destructive", "bg-muted", "bg-accent"];
-      return colors[index % colors.length];
+      return "bg-muted text-foreground";
   }
 }
 
@@ -82,9 +91,9 @@ function getStatusBadgeClass(status: EtapaExecucao["status"], isAtiva: boolean) 
 
   switch (status) {
     case "concluido":
-      return "border-success/30 bg-success/12 text-success"
+      return EXECUTION_GREEN_BADGE_CLASS
     case "erro":
-      return "border-destructive/25 bg-destructive/10 text-destructive"
+      return EXECUTION_ERROR_BADGE_CLASS
     default:
       return "border-glass-border bg-background/70 text-muted-foreground"
   }
@@ -135,6 +144,7 @@ export function FilaExecucao({
             const IconComponent = iconMap[etapa.icone] || FileText;
             const isAtiva = etapaAtivaId === etapa.id;
             const isClickable = Boolean(onExecutarEtapa) && !isExecutando;
+            const statusLabel = getStatusLabel(etapa.status, isAtiva);
 
             // Etapa Dedução (id=3) pode expandir sub-itens quando há deduções
             const isDeducaoEtapa = etapa.id === 3 && deducoes.length > 0;
@@ -146,6 +156,7 @@ export function FilaExecucao({
                   onClick={() => onExecutarEtapa?.(etapa)}
                   disabled={!isClickable}
                   title={onExecutarEtapa ? "Clique para executar apenas esta etapa" : undefined}
+                  aria-label={`Etapa ${index + 1}: ${etapa.nome}. Status ${statusLabel}.`}
                   className={cn(
                     "flex w-full items-center gap-3 rounded-xl border px-3 py-3 text-left transition-all",
                     isAtiva
@@ -157,9 +168,10 @@ export function FilaExecucao({
                 >
                   <span
                     className={cn(
-                      "flex h-6 w-6 items-center justify-center rounded-full text-xs font-bold text-primary-foreground",
-                      getStatusColor(etapa.status, index)
+                      "flex h-6 w-6 items-center justify-center rounded-full text-xs font-bold",
+                      getStepCircleClass(etapa.status, isAtiva)
                     )}
+                    aria-hidden="true"
                   >
                     {index + 1}
                   </span>
@@ -199,7 +211,7 @@ export function FilaExecucao({
                       getStatusBadgeClass(etapa.status, isAtiva)
                     )}
                   >
-                    {getStatusLabel(etapa.status, isAtiva)}
+                    {statusLabel}
                   </span>
                 </button>
 
@@ -240,9 +252,9 @@ export function FilaExecucao({
                             className={cn(
                               "flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-[11px] font-medium transition-colors",
                               ded.status === "concluido"
-                                ? "text-success hover:bg-success/10"
+                                ? "text-[color:oklch(0.38_0.08_160)] hover:bg-[color:color-mix(in_oklch,var(--success)_10%,transparent)]"
                                 : ded.status === "erro"
-                                ? "border border-destructive/30 bg-destructive/10 text-destructive hover:bg-destructive/15"
+                                ? "border border-destructive/30 bg-destructive/10 text-[color:oklch(0.42_0.15_25)] hover:bg-destructive/15"
                                 : "border border-primary/25 bg-primary/10 text-primary hover:bg-primary/15",
                               !dedClickable && "cursor-default opacity-50"
                             )}
@@ -262,8 +274,10 @@ export function FilaExecucao({
 
         <div className="mt-6 flex gap-3">
           <GlassButton
-            variant="success"
-            className="flex-1"
+            variant="secondary"
+            className={cn("flex-1", EXECUTION_GREEN_BUTTON_CLASS)}
+            aria-label={isExecutando ? "Executando todas as etapas" : "Executar todas as etapas"}
+            title="Executar todas as etapas em sequência"
             onClick={onExecutarTudo}
             disabled={isExecutando}
           >
@@ -271,10 +285,12 @@ export function FilaExecucao({
             {isExecutando ? "Executando..." : "Executar Tudo"}
           </GlassButton>
           <GlassButton
-            variant="warning"
-            className="flex-1"
+            variant="ghost"
+            aria-label="Apropriar no SIAFI"
+            title="Enviar o documento atual para apropriação no SIAFI"
             onClick={onApropriarSIAFI}
             disabled={isExecutando}
+            className={cn("flex-1 border", EXECUTION_SIAFI_OUTLINE_CLASS)}
           >
             <Circle className="h-4 w-4" />
             Apropriar SIAFI

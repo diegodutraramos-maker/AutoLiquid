@@ -592,6 +592,36 @@ export async function executarDeducao(
   )
 }
 
+export async function salvarPreenchimentoDocumento(
+  documentoId: string,
+  options: {
+    lfNumero?: string
+    ugrNumero?: string
+    vencimentoDocumento?: string
+    usarContaPdf?: boolean
+    contaBanco?: string
+    contaAgencia?: string
+    contaConta?: string
+  } = {}
+): Promise<DocumentoProcessado> {
+  return apiFetch<DocumentoProcessado>(
+    `/api/documentos/${documentoId}/salvar-preenchimento`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        lfNumero: options.lfNumero ?? "",
+        ugrNumero: options.ugrNumero ?? "",
+        vencimentoDocumento: options.vencimentoDocumento ?? "",
+        usarContaPdf: options.usarContaPdf ?? true,
+        contaBanco: options.contaBanco ?? "",
+        contaAgencia: options.contaAgencia ?? "",
+        contaConta: options.contaConta ?? "",
+      }),
+    }
+  )
+}
+
 export async function pararExecucao(
   documentoId: string
 ): Promise<StopExecutionResponse> {

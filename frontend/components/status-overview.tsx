@@ -146,7 +146,9 @@ export function StatusOverview({
               <Receipt className="h-3.5 w-3.5" />
               Deduções
             </div>
-            <p className="mt-2 text-sm font-semibold text-destructive">{formatCurrency(resumo.deducoes)}</p>
+            <p className="mt-2 text-sm font-semibold text-foreground">
+              - {formatCurrency(resumo.deducoes)}
+            </p>
           </GlassPanel>
 
           <GlassPanel className="border-glass-border/70 bg-background/70 p-3">

@@ -10,16 +10,9 @@ import { StatusOverview } from "@/components/status-overview";
 import { TabelasModal } from "@/components/tabelas-modal";
 import { ConfiguracoesModal } from "@/components/configuracoes-modal";
 import { GlassButton } from "@/components/glass-card";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import {
+  abrirUrl,
   MOCK_DOCUMENTO,
   MOCK_DEDUCOES,
   MOCK_EMPENHOS,
@@ -48,19 +41,16 @@ import {
   executarEtapa,
   executarDeducao,
   apropriarSIAFI,
+  salvarPreenchimentoDocumento,
 } from "@/lib/data";
 
-type PendingExecution =
-  | { type: "todas" }
-  | { type: "etapa"; etapa: EtapaExecucao }
-  | null;
+const FILA_TRABALHO_URL =
+  "https://docs.google.com/spreadsheets/d/1O2Ft4Ioy3_t4bKmPQ38d56UhHY2TBHfPI6kTkNkmy-4/edit?gid=0#gid=0";
 
 function ConferenciaPageContent() {
   const searchParams = useSearchParams();
   const documentoId = searchParams.get("id");
-  const filaRef = useRef<HTMLDivElement | null>(null);
   const execucaoAbortControllerRef = useRef<AbortController | null>(null);
-  const ugrDialogDispensadoRef = useRef(false);
   const [documento, setDocumento] = useState<Documento>(MOCK_DOCUMENTO);
   const [resumo, setResumo] = useState<ResumoFinanceiro>(MOCK_RESUMO_FINANCEIRO);
   const [notasFiscais, setNotasFiscais] = useState<NotaFiscal[]>(MOCK_NOTAS_FISCAIS);
@@ -94,23 +84,26 @@ function ConferenciaPageContent() {
   const [ugrNumero, setUgrNumero] = useState("");
   const [vencimentoDocumento, setVencimentoDocumento] = useState("");
   const [requiresCentroCusto, setRequiresCentroCusto] = useState(false);
-  const [isLfDialogOpen, setIsLfDialogOpen] = useState(false);
-  const [isUgrDialogOpen, setIsUgrDialogOpen] = useState(false);
-  const [isFaturaDialogOpen, setIsFaturaDialogOpen] = useState(false);
-  const [faturaDialogResolvido, setFaturaDialogResolvido] = useState(false);
-  const [isContaDialogOpen, setIsContaDialogOpen] = useState(false);
-  const [contaDialogResolvido, setContaDialogResolvido] = useState(false);
   const [usarContaPdf, setUsarContaPdf] = useState(true);
   const [contaBanco, setContaBanco] = useState("");
   const [contaAgencia, setContaAgencia] = useState("");
   const [contaConta, setContaConta] = useState("");
-  const [pendingExecution, setPendingExecution] = useState<PendingExecution>(null);
   const [datasDeducoes, setDatasDeducoes] = useState<Record<number, { apuracao: string; vencimento: string }>>({});
+  const [tocouLf, setTocouLf] = useState(false);
+  const [tocouUgr, setTocouUgr] = useState(false);
+  const [tocouConta, setTocouConta] = useState(false);
+  const [tocouFatura, setTocouFatura] = useState(false);
+  const [salvandoPendencias, setSalvandoPendencias] = useState(false);
   const precisaLF = deducoes.some((deducao) => deducao.siafi === "DOB001");
   const precisaUGR = requiresCentroCusto;
   const temFatura = notasFiscais.some((nota) =>
     nota.tipo.toLowerCase().includes("fatura")
   );
+  const contaPdfDisponivel = Boolean(documento.bancoPdf || documento.agenciaPdf || documento.contaPdf);
+  const contaManualCompleta = Boolean(
+    contaBanco.trim() && contaAgencia.trim() && contaConta.trim()
+  );
+  const dadosBancariosResolvidos = usarContaPdf ? contaPdfDisponivel : contaManualCompleta;
 
   const aplicarPayload = (payload: DocumentoProcessado) => {
     setDocumento(payload.documento);
@@ -134,13 +127,6 @@ function ConferenciaPageContent() {
     setUgrNumero(payload.ugrNumero ?? "");
     setVencimentoDocumento(payload.vencimentoDocumento ?? "");
     setRequiresCentroCusto(Boolean(payload.requiresCentroCusto));
-    setFaturaDialogResolvido(
-      Boolean(
-        payload.vencimentoDocumento.trim() ||
-          payload.lfNumero.trim() ||
-          payload.ugrNumero.trim()
-      )
-    );
     setIsExecutando(Boolean(payload.isRunning));
     setParadaSolicitada(Boolean(payload.cancelRequested));
     setEtapaAtivaId(
@@ -158,19 +144,6 @@ function ConferenciaPageContent() {
             ? `Executando ${etapaEmExecucao.nome}...`
             : "Execução em andamento..."
       );
-    }
-    const payloadTemFatura = payload.notasFiscais.some((nota) =>
-      nota.tipo.toLowerCase().includes("fatura")
-    );
-
-    if (
-      payload.requiresCentroCusto &&
-      !String(payload.ugrNumero ?? "").trim() &&
-      !payload.isRunning &&
-      !ugrDialogDispensadoRef.current &&
-      !payloadTemFatura
-    ) {
-      setIsUgrDialogOpen(true);
     }
   };
 
@@ -303,19 +276,17 @@ function ConferenciaPageContent() {
   }, [documentoId]);
 
   useEffect(() => {
-    ugrDialogDispensadoRef.current = false;
-    setIsUgrDialogOpen(false);
     setUgrNumero("");
     setLfNumero("");
     setVencimentoDocumento("");
-    setIsFaturaDialogOpen(false);
-    setFaturaDialogResolvido(false);
-    setIsContaDialogOpen(false);
-    setContaDialogResolvido(false);
     setUsarContaPdf(true);
     setContaBanco("");
     setContaAgencia("");
     setContaConta("");
+    setTocouLf(false);
+    setTocouUgr(false);
+    setTocouConta(false);
+    setTocouFatura(false);
   }, [documentoId]);
 
   useEffect(() => {
@@ -449,49 +420,58 @@ function ConferenciaPageContent() {
     }
   };
 
+  const validarPendenciasPreenchimento = (contexto: "todas" | "etapa", etapa?: EtapaExecucao) => {
+    const faltas: string[] = [];
+    let mensagemSemClique = "";
+
+    if ((contexto === "todas" || etapa?.id === 5) && precisaUGR && !ugrNumero.trim()) {
+      faltas.push("UGR");
+      if (!tocouUgr) {
+        mensagemSemClique = "Preencha a UGR na aba Pendências antes de continuar.";
+      }
+    }
+
+    if ((contexto === "todas" || etapa?.id === 3) && precisaLF && !lfNumero.trim()) {
+      faltas.push("LF");
+      if (!mensagemSemClique && !tocouLf) {
+        mensagemSemClique = "Preencha a LF na aba Pendências antes de continuar.";
+      }
+    }
+
+    if (contexto === "todas" || etapa?.id === 4) {
+      if (temFatura && !vencimentoDocumento.trim()) {
+        faltas.push("vencimento da fatura");
+        if (!mensagemSemClique && !tocouFatura) {
+          mensagemSemClique = "Revise os dados de fatura na aba Pendências antes de executar.";
+        }
+      }
+
+      if (!dadosBancariosResolvidos) {
+        faltas.push("dados bancários");
+        if (!mensagemSemClique && !tocouConta) {
+          mensagemSemClique = "Escolha ou preencha os dados bancários na aba Pendências antes de executar.";
+        }
+      }
+    }
+
+    if (faltas.length === 0) {
+      return true;
+    }
+
+    setErro(mensagemSemClique || `Ainda há pendências de preenchimento: ${faltas.join(", ")}.`);
+    setStatusMensagem("Preencha as lacunas destacadas na aba Pendências antes de executar.");
+    return false;
+  };
+
   const handleExecutarTudo = async () => {
-    if (temFatura && !faturaDialogResolvido) {
-      setPendingExecution({ type: "todas" });
-      setIsFaturaDialogOpen(true);
-      return;
-    }
-    if (precisaUGR && !ugrNumero.trim()) {
-      setPendingExecution({ type: "todas" });
-      setIsUgrDialogOpen(true);
-      return;
-    }
-    if (precisaLF && !lfNumero.trim()) {
-      setPendingExecution({ type: "todas" });
-      setIsLfDialogOpen(true);
-      return;
-    }
-    if (!contaDialogResolvido) {
-      setPendingExecution({ type: "todas" });
-      setIsContaDialogOpen(true);
+    if (!validarPendenciasPreenchimento("todas")) {
       return;
     }
     await executeAll();
   };
 
   const handleExecutarEtapa = async (etapa: EtapaExecucao) => {
-    if (temFatura && !faturaDialogResolvido) {
-      setPendingExecution({ type: "etapa", etapa });
-      setIsFaturaDialogOpen(true);
-      return;
-    }
-    if (etapa.id === 5 && precisaUGR && !ugrNumero.trim()) {
-      setPendingExecution({ type: "etapa", etapa });
-      setIsUgrDialogOpen(true);
-      return;
-    }
-    if (etapa.id === 3 && precisaLF && !lfNumero.trim()) {
-      setPendingExecution({ type: "etapa", etapa });
-      setIsLfDialogOpen(true);
-      return;
-    }
-    if (etapa.id === 4 && !contaDialogResolvido) {
-      setPendingExecution({ type: "etapa", etapa });
-      setIsContaDialogOpen(true);
+    if (!validarPendenciasPreenchimento("etapa", etapa)) {
       return;
     }
     await executeEtapa(etapa);
@@ -540,21 +520,6 @@ function ConferenciaPageContent() {
     }
   };
 
-  const handleConfirmarConta = async () => {
-    const pendencia = pendingExecution;
-    setIsContaDialogOpen(false);
-    setContaDialogResolvido(true);
-    setPendingExecution(null);
-    setErro("");
-
-    if (!pendencia) return;
-    if (pendencia.type === "todas") {
-      await executeAll(lfNumero, ugrNumero, vencimentoDocumento, usarContaPdf, contaBanco, contaAgencia, contaConta);
-      return;
-    }
-    await executeEtapa(pendencia.etapa, lfNumero, ugrNumero, vencimentoDocumento, usarContaPdf, contaBanco, contaAgencia, contaConta);
-  };
-
   const handlePararExecucao = async () => {
     if (!documentoId || !isExecutando) return;
 
@@ -571,6 +536,35 @@ function ConferenciaPageContent() {
           ? error.message
           : "Erro ao solicitar a interrupção da execução."
       );
+    }
+  };
+
+  const handleSalvarPreenchimento = async () => {
+    if (!documentoId) return;
+    setSalvandoPendencias(true);
+    setErro("");
+
+    try {
+      const payload = await salvarPreenchimentoDocumento(documentoId, {
+        lfNumero,
+        ugrNumero,
+        vencimentoDocumento,
+        usarContaPdf,
+        contaBanco,
+        contaAgencia,
+        contaConta,
+      });
+      aplicarPayload(payload);
+      setStatusMensagem("Preenchimento operacional salvo.");
+    } catch (error) {
+      console.error("Erro ao salvar preenchimento:", error);
+      setErro(
+        error instanceof Error
+          ? error.message
+          : "Não foi possível salvar os campos de pendência."
+      );
+    } finally {
+      setSalvandoPendencias(false);
     }
   };
 
@@ -613,108 +607,7 @@ function ConferenciaPageContent() {
     }
   };
 
-  const handleConfirmarLf = async () => {
-    const lfLimpa = lfNumero.trim();
-    if (!lfLimpa) {
-      setErro("Informe o número da LF antes de executar DOB001.");
-      return;
-    }
-
-    const pendencia = pendingExecution;
-    setIsLfDialogOpen(false);
-    setErro("");
-
-    if (!pendencia) return;
-
-    // Após LF, ainda precisamos perguntar sobre a conta (se for "todas")
-    if (pendencia.type === "todas" && !contaDialogResolvido) {
-      setIsContaDialogOpen(true);
-      return;
-    }
-
-    setPendingExecution(null);
-    if (pendencia.type === "todas") {
-      await executeAll(lfLimpa, ugrNumero, vencimentoDocumento, usarContaPdf, contaBanco, contaAgencia, contaConta);
-      return;
-    }
-    await executeEtapa(pendencia.etapa, lfLimpa, ugrNumero, vencimentoDocumento, usarContaPdf, contaBanco, contaAgencia, contaConta);
-  };
-
-  const handleConfirmarUgr = async () => {
-    const ugrLimpa = ugrNumero.trim();
-    if (!ugrLimpa) {
-      setErro("Informe a UGR antes de executar Centro de Custo.");
-      return;
-    }
-
-    ugrDialogDispensadoRef.current = false;
-    const pendencia = pendingExecution;
-    setIsUgrDialogOpen(false);
-    setErro("");
-
-    if (!pendencia) return;
-
-    const precisaLfDepoisDaUgr =
-      precisaLF &&
-      !lfNumero.trim() &&
-      (pendencia.type === "todas" || pendencia.etapa.id === 3);
-
-    if (precisaLfDepoisDaUgr) {
-      setIsLfDialogOpen(true);
-      return;
-    }
-
-    // Após UGR, ainda precisamos perguntar sobre a conta (se for "todas")
-    if (pendencia.type === "todas" && !contaDialogResolvido) {
-      setIsContaDialogOpen(true);
-      return;
-    }
-
-    setPendingExecution(null);
-    if (pendencia.type === "todas") {
-      await executeAll(lfNumero, ugrLimpa, vencimentoDocumento, usarContaPdf, contaBanco, contaAgencia, contaConta);
-      return;
-    }
-    await executeEtapa(pendencia.etapa, lfNumero, ugrLimpa, vencimentoDocumento, usarContaPdf, contaBanco, contaAgencia, contaConta);
-  };
-
-  const handleConfirmarFatura = async () => {
-    const lfLimpa = lfNumero.trim();
-    const ugrLimpa = ugrNumero.trim();
-    const vencimentoLimpo = vencimentoDocumento.trim();
-
-    if (precisaUGR && !ugrLimpa) {
-      setErro("Informe a UGR para o Centro de Custo.");
-      return;
-    }
-
-    if (precisaLF && !lfLimpa) {
-      setErro("Informe o número da LF antes de executar este processo.");
-      return;
-    }
-
-    const pendencia = pendingExecution;
-    setIsFaturaDialogOpen(false);
-    setErro("");
-    setFaturaDialogResolvido(true);
-
-    if (!pendencia) return;
-
-    // Após fatura, perguntar sobre a conta
-    if (!contaDialogResolvido) {
-      setIsContaDialogOpen(true);
-      return;
-    }
-
-    setPendingExecution(null);
-    if (pendencia.type === "todas") {
-      await executeAll(lfLimpa, ugrLimpa, vencimentoLimpo, usarContaPdf, contaBanco, contaAgencia, contaConta);
-      return;
-    }
-    await executeEtapa(pendencia.etapa, lfLimpa, ugrLimpa, vencimentoLimpo, usarContaPdf, contaBanco, contaAgencia, contaConta);
-  };
-
-  const pendenciasVisiveis = pendencias.filter((pendencia) => {
+  const pendenciasBaseVisiveis = pendencias.filter((pendencia) => {
     const titulo = String(pendencia.titulo ?? "").toLowerCase();
 
     if (titulo.includes("ugr obrigatória") && ugrNumero.trim()) {
@@ -727,6 +620,52 @@ function ConferenciaPageContent() {
 
     return true;
   });
+
+  const pendenciasLocais: PendenciaDocumento[] = [];
+
+  if (precisaUGR && !ugrNumero.trim()) {
+    pendenciasLocais.push({
+      id: "local-ugr",
+      tipo: "bloqueio",
+      titulo: "UGR pendente",
+      descricao: "Informe a UGR para liberar a etapa de Centro de Custo.",
+      origem: "configuracao",
+    });
+  }
+
+  if (precisaLF && !lfNumero.trim()) {
+    pendenciasLocais.push({
+      id: "local-lf",
+      tipo: "bloqueio",
+      titulo: "LF pendente",
+      descricao: "Preencha a LF para permitir a execução das deduções que dependem dela.",
+      origem: "configuracao",
+    });
+  }
+
+  if (temFatura && !vencimentoDocumento.trim()) {
+    pendenciasLocais.push({
+      id: "local-fatura-vencimento",
+      tipo: "atencao",
+      titulo: "Vencimento da fatura não informado",
+      descricao: "Se este documento usa vencimento específico de fatura, informe-o antes de executar os dados de pagamento.",
+      origem: "configuracao",
+    });
+  }
+
+  if (!dadosBancariosResolvidos) {
+    pendenciasLocais.push({
+      id: "local-banco",
+      tipo: "bloqueio",
+      titulo: "Dados bancários pendentes",
+      descricao: usarContaPdf
+        ? "Selecione uma conta válida do PDF ou troque para preenchimento manual."
+        : "Preencha banco, agência e conta para concluir Dados de Pagamento.",
+      origem: "configuracao",
+    });
+  }
+
+  const pendenciasVisiveis = [...pendenciasBaseVisiveis, ...pendenciasLocais];
 
   const bloqueiosAtivos = pendenciasVisiveis.filter((pendencia) => pendencia.tipo === "bloqueio");
   const pontosAtencao = pendenciasVisiveis.filter((pendencia) =>
@@ -776,9 +715,7 @@ function ConferenciaPageContent() {
         onOpenConfiguracoes={() => setIsConfiguracoesOpen(true)}
         onOpenChrome={handleAbrirChrome}
         chromeActionDisabled={abrindoChrome}
-        onOpenFilaTrabalho={() =>
-          filaRef.current?.scrollIntoView({ behavior: "smooth", block: "start" })
-        }
+        onOpenFilaTrabalho={() => void abrirUrl(FILA_TRABALHO_URL)}
       />
 
       <main className="relative mx-auto max-w-[1600px] px-4 py-8 sm:px-6 xl:px-8">
@@ -800,7 +737,7 @@ function ConferenciaPageContent() {
         </div>
 
         {/* Main Grid Layout */}
-        <div className="grid items-start gap-6 xl:grid-cols-[minmax(260px,320px)_minmax(720px,1.8fr)_minmax(300px,360px)]">
+        <div className="grid items-start gap-6 min-[1180px]:grid-cols-[minmax(240px,300px)_minmax(0,1.7fr)_minmax(270px,330px)]">
           {/* Left Column - Documento */}
           <div className="space-y-6">
             <DocumentoPanel documento={documento} resumo={resumo} />
@@ -822,6 +759,196 @@ function ConferenciaPageContent() {
               logsSimples={logsSimples}
               nivelLog={nivelLog}
               pendencias={pendenciasVisiveis}
+              pendenciasExtraContent={
+                <div className="rounded-2xl border border-glass-border/70 bg-background/55 p-4">
+                  <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">
+                        Preenchimento Operacional
+                      </p>
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        Resolva aqui as lacunas antes de executar. Se nada for selecionado, a execução avisa sem abrir pop-ups.
+                      </p>
+                    </div>
+                    <GlassButton
+                      variant="secondary"
+                      size="sm"
+                      onClick={() => void handleSalvarPreenchimento()}
+                      disabled={salvandoPendencias || isExecutando}
+                      className="shrink-0"
+                    >
+                      {salvandoPendencias ? "Salvando..." : "Salvar"}
+                    </GlassButton>
+                  </div>
+
+                  <div className="grid gap-4 lg:grid-cols-2">
+                    {(precisaLF || temFatura) && (
+                      <div className="space-y-3 rounded-2xl border border-glass-border/60 bg-secondary/20 p-4">
+                        <div>
+                          <p className="text-sm font-semibold text-foreground">LF e fatura</p>
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            Use a LF do processo e, se houver fatura, informe também o vencimento específico.
+                          </p>
+                        </div>
+                        <div className="space-y-2">
+                          <label className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
+                            LF
+                          </label>
+                          <Input
+                            value={lfNumero}
+                            maxLength={12}
+                            placeholder="Ex.: 2026LF00123"
+                            onFocus={() => setTocouLf(true)}
+                            onChange={(event) => {
+                              setTocouLf(true);
+                              setLfNumero(event.target.value);
+                            }}
+                          />
+                        </div>
+                        {temFatura && (
+                          <div className="space-y-2">
+                            <label className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
+                              Vencimento da fatura
+                            </label>
+                            <Input
+                              value={vencimentoDocumento}
+                              placeholder="dd/mm/aaaa"
+                              onFocus={() => setTocouFatura(true)}
+                              onChange={(event) => {
+                                setTocouFatura(true);
+                                setVencimentoDocumento(event.target.value);
+                              }}
+                            />
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {precisaUGR && (
+                      <div className="space-y-3 rounded-2xl border border-glass-border/60 bg-secondary/20 p-4">
+                        <div>
+                          <p className="text-sm font-semibold text-foreground">Centro de custo</p>
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            A UGR será usada na etapa de Centro de Custo.
+                          </p>
+                        </div>
+                        <div className="space-y-2">
+                          <label className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
+                            UGR
+                          </label>
+                          <Input
+                            value={ugrNumero}
+                            maxLength={6}
+                            placeholder="Ex.: 153424"
+                            onFocus={() => setTocouUgr(true)}
+                            onChange={(event) => {
+                              setTocouUgr(true);
+                              setUgrNumero(event.target.value);
+                            }}
+                          />
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="space-y-3 rounded-2xl border border-glass-border/60 bg-secondary/20 p-4 lg:col-span-2">
+                      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                        <div>
+                          <p className="text-sm font-semibold text-foreground">Dados bancários</p>
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            Escolha usar a conta do PDF ou informe manualmente banco, agência e conta.
+                          </p>
+                        </div>
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setTocouConta(true);
+                              setUsarContaPdf(true);
+                            }}
+                            className={`rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
+                              usarContaPdf
+                                ? "border-primary bg-primary/10 text-primary"
+                                : "border-glass-border bg-background text-muted-foreground hover:bg-secondary/50"
+                            }`}
+                          >
+                            Conta do PDF
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setTocouConta(true);
+                              setUsarContaPdf(false);
+                              if (!contaBanco && documento.bancoPdf) setContaBanco(documento.bancoPdf);
+                              if (!contaAgencia && documento.agenciaPdf) setContaAgencia(documento.agenciaPdf);
+                              if (!contaConta && documento.contaPdf) setContaConta(documento.contaPdf);
+                            }}
+                            className={`rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
+                              !usarContaPdf
+                                ? "border-primary bg-primary/10 text-primary"
+                                : "border-glass-border bg-background text-muted-foreground hover:bg-secondary/50"
+                            }`}
+                          >
+                            Preencher manualmente
+                          </button>
+                        </div>
+                      </div>
+
+                      {usarContaPdf ? (
+                        <div className="rounded-xl border border-glass-border/60 bg-background/70 px-3 py-3 text-sm text-muted-foreground">
+                          {contaPdfDisponivel
+                            ? [documento.bancoPdf && `Banco ${documento.bancoPdf}`, documento.agenciaPdf && `Ag. ${documento.agenciaPdf}`, documento.contaPdf && `Conta ${documento.contaPdf}`].filter(Boolean).join(" · ")
+                            : "Nenhuma conta foi identificada no PDF. Troque para preenchimento manual."}
+                        </div>
+                      ) : (
+                        <div className="grid gap-3 md:grid-cols-3">
+                          <div className="space-y-2">
+                            <label className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
+                              Banco
+                            </label>
+                            <Input
+                              value={contaBanco}
+                              placeholder={documento.bancoPdf || "Ex.: 001"}
+                              onFocus={() => setTocouConta(true)}
+                              onChange={(e) => {
+                                setTocouConta(true);
+                                setContaBanco(e.target.value);
+                              }}
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <label className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
+                              Agência
+                            </label>
+                            <Input
+                              value={contaAgencia}
+                              placeholder={documento.agenciaPdf || "Ex.: 0001-9"}
+                              onFocus={() => setTocouConta(true)}
+                              onChange={(e) => {
+                                setTocouConta(true);
+                                setContaAgencia(e.target.value);
+                              }}
+                            />
+                          </div>
+                          <div className="space-y-2">
+                            <label className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
+                              Conta
+                            </label>
+                            <Input
+                              value={contaConta}
+                              placeholder={documento.contaPdf || "Ex.: 12345-6"}
+                              onFocus={() => setTocouConta(true)}
+                              onChange={(e) => {
+                                setTocouConta(true);
+                                setContaConta(e.target.value);
+                              }}
+                            />
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              }
               onLimparLogs={() => {
                 setLogs([]);
                 setLogsSimples([]);
@@ -831,7 +958,7 @@ function ConferenciaPageContent() {
           </div>
 
           {/* Right Column - Fila de Execução */}
-          <div ref={filaRef} className="space-y-6 xl:min-w-[300px]">
+          <div className="space-y-6 min-[1180px]:min-w-[270px]">
             <FilaExecucao
               etapas={etapas}
               deducoes={deducoes}
@@ -894,295 +1021,6 @@ function ConferenciaPageContent() {
           setIsTabelasOpen(true);
         }}
       />
-      <Dialog
-        open={isFaturaDialogOpen}
-        onOpenChange={(open) => {
-          setIsFaturaDialogOpen(open);
-          if (!open) {
-            setPendingExecution(null);
-          }
-        }}
-      >
-        <DialogContent showCloseButton={false}>
-          <DialogHeader>
-            <DialogTitle>Informações da fatura</DialogTitle>
-            <DialogDescription>
-              Para processos com fatura, concentre aqui a UGR, a LF e um vencimento diferente
-              para Dados Básicos e Dados de Pagamento. Se o vencimento for igual ao do processo
-              ou se não existir LF, deixe em branco.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-3">
-            <div className="space-y-2">
-              <label
-                className="text-sm font-medium text-foreground"
-                htmlFor="vencimento-documento"
-              >
-                Vencimento diferente da fatura
-              </label>
-              <Input
-                id="vencimento-documento"
-                value={vencimentoDocumento}
-                placeholder="dd/mm/aaaa"
-                onChange={(event) => setVencimentoDocumento(event.target.value)}
-              />
-            </div>
-
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-foreground" htmlFor="lf-numero-fatura">
-                LF
-              </label>
-              <Input
-                id="lf-numero-fatura"
-                value={lfNumero}
-                maxLength={12}
-                placeholder="Preencha só se houver LF"
-                onChange={(event) => setLfNumero(event.target.value)}
-              />
-            </div>
-
-            {precisaUGR && (
-              <div className="space-y-2">
-                <label className="text-sm font-medium text-foreground" htmlFor="ugr-numero-fatura">
-                  UGR
-                </label>
-                <Input
-                  id="ugr-numero-fatura"
-                  value={ugrNumero}
-                  maxLength={6}
-                  placeholder="Ex.: 153424"
-                  onChange={(event) => setUgrNumero(event.target.value)}
-                />
-              </div>
-            )}
-          </div>
-          <DialogFooter>
-            <GlassButton
-              variant="ghost"
-              onClick={() => {
-                setIsFaturaDialogOpen(false);
-                setPendingExecution(null);
-              }}
-            >
-              Agora não
-            </GlassButton>
-            <GlassButton onClick={() => void handleConfirmarFatura()}>
-              Confirmar dados
-            </GlassButton>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog
-        open={isUgrDialogOpen}
-        onOpenChange={(open) => {
-          setIsUgrDialogOpen(open);
-          if (!open) {
-            ugrDialogDispensadoRef.current = true;
-          }
-        }}
-      >
-        <DialogContent showCloseButton={false}>
-          <DialogHeader>
-            <DialogTitle>UGR necessária para Centro de Custo</DialogTitle>
-            <DialogDescription>
-              Este processo possui Centro de Custo. Informe a <code>UGR</code> e a automação vai usar a tabela
-              <code> UORG </code>
-              para converter o <code>Código SIORG</code>.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-foreground" htmlFor="ugr-numero">
-              UGR
-            </label>
-            <Input
-              id="ugr-numero"
-              value={ugrNumero}
-              maxLength={6}
-              placeholder="Ex.: 153424"
-              onChange={(event) => setUgrNumero(event.target.value)}
-            />
-          </div>
-          <DialogFooter>
-            <GlassButton
-              variant="ghost"
-              onClick={() => {
-                ugrDialogDispensadoRef.current = true;
-                setIsUgrDialogOpen(false);
-              }}
-            >
-              Agora não
-            </GlassButton>
-            <GlassButton onClick={() => void handleConfirmarUgr()}>
-              Confirmar UGR
-            </GlassButton>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog
-        open={isContaDialogOpen}
-        onOpenChange={(open) => {
-          setIsContaDialogOpen(open);
-          if (!open) {
-            setPendingExecution(null);
-          }
-        }}
-      >
-        <DialogContent showCloseButton={false}>
-          <DialogHeader>
-            <DialogTitle>Conta para Dados de Pagamento</DialogTitle>
-            <DialogDescription>
-              Escolha qual conta bancária usar no Pré-Doc. Se a conta da solicitação de
-              pagamento (PDF) já está cadastrada no sistema, selecione a primeira opção.
-              Caso contrário, informe os dados abaixo.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div className="flex gap-2">
-              <button
-                type="button"
-                onClick={() => setUsarContaPdf(true)}
-                className={`flex-1 rounded-lg border px-4 py-3 text-sm font-medium transition-colors ${
-                  usarContaPdf
-                    ? "border-primary bg-primary/10 text-primary"
-                    : "border-border bg-background text-muted-foreground hover:bg-accent"
-                }`}
-              >
-                <div>Conta da solicitação (PDF)</div>
-                {(documento.bancoPdf || documento.agenciaPdf || documento.contaPdf) && (
-                  <div className="mt-1 text-xs opacity-70">
-                    {[
-                      documento.bancoPdf && `Banco ${documento.bancoPdf}`,
-                      documento.agenciaPdf && `Ag. ${documento.agenciaPdf}`,
-                      documento.contaPdf && `Conta ${documento.contaPdf}`,
-                    ]
-                      .filter(Boolean)
-                      .join(" · ")}
-                  </div>
-                )}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setUsarContaPdf(false);
-                  // Pré-preenche com os dados do PDF como ponto de partida
-                  if (!contaBanco && documento.bancoPdf) setContaBanco(documento.bancoPdf);
-                  if (!contaAgencia && documento.agenciaPdf) setContaAgencia(documento.agenciaPdf);
-                  if (!contaConta && documento.contaPdf) setContaConta(documento.contaPdf);
-                }}
-                className={`flex-1 rounded-lg border px-4 py-3 text-sm font-medium transition-colors ${
-                  !usarContaPdf
-                    ? "border-primary bg-primary/10 text-primary"
-                    : "border-border bg-background text-muted-foreground hover:bg-accent"
-                }`}
-              >
-                Outra conta
-              </button>
-            </div>
-
-            {!usarContaPdf && (
-              <div className="space-y-3 rounded-lg border border-border bg-muted/30 p-3">
-                <div className="space-y-1">
-                  <label className="text-xs font-medium text-muted-foreground" htmlFor="conta-banco">
-                    Banco
-                  </label>
-                  <Input
-                    id="conta-banco"
-                    value={contaBanco}
-                    placeholder={documento.bancoPdf || "Ex.: 001"}
-                    onChange={(e) => setContaBanco(e.target.value)}
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-medium text-muted-foreground" htmlFor="conta-agencia">
-                    Agência
-                  </label>
-                  <Input
-                    id="conta-agencia"
-                    value={contaAgencia}
-                    placeholder={documento.agenciaPdf || "Ex.: 0001-9"}
-                    onChange={(e) => setContaAgencia(e.target.value)}
-                  />
-                </div>
-                <div className="space-y-1">
-                  <label className="text-xs font-medium text-muted-foreground" htmlFor="conta-conta">
-                    Conta
-                  </label>
-                  <Input
-                    id="conta-conta"
-                    value={contaConta}
-                    placeholder={documento.contaPdf || "Ex.: 12345-6"}
-                    onChange={(e) => setContaConta(e.target.value)}
-                  />
-                </div>
-              </div>
-            )}
-          </div>
-          <DialogFooter>
-            <GlassButton
-              variant="ghost"
-              onClick={() => {
-                setIsContaDialogOpen(false);
-                setPendingExecution(null);
-              }}
-            >
-              Agora não
-            </GlassButton>
-            <GlassButton onClick={() => void handleConfirmarConta()}>
-              Confirmar conta
-            </GlassButton>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog
-        open={isLfDialogOpen}
-        onOpenChange={(open) => {
-          setIsLfDialogOpen(open);
-          if (!open) {
-            if (!isUgrDialogOpen) {
-              setPendingExecution(null);
-            }
-          }
-        }}
-      >
-        <DialogContent showCloseButton={false}>
-          <DialogHeader>
-            <DialogTitle>Número da LF necessário</DialogTitle>
-            <DialogDescription>
-              Este processo possui dedução <code>DOB001</code>. Informe a LF uma única vez e a automação vai
-              reaproveitar esse valor nas demais deduções do processo.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-foreground" htmlFor="lf-numero">
-              Número da LF
-            </label>
-            <Input
-              id="lf-numero"
-              value={lfNumero}
-              maxLength={12}
-              placeholder="Ex.: 2026LF00123"
-              onChange={(event) => setLfNumero(event.target.value)}
-            />
-          </div>
-          <DialogFooter>
-            <GlassButton
-              variant="ghost"
-              onClick={() => {
-                setIsLfDialogOpen(false);
-                setPendingExecution(null);
-              }}
-            >
-              Agora não
-            </GlassButton>
-            <GlassButton onClick={() => void handleConfirmarLf()}>
-              Confirmar LF
-            </GlassButton>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }

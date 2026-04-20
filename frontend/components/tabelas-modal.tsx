@@ -135,7 +135,7 @@ export function TabelasModal({
     return () => {
       cancelled = true;
     };
-  }, [activeTab, datasets, isOpen, loadingTabs, tabs]);
+  }, [activeTab, datasets, isOpen, tabs]);
 
   if (!isOpen) return null;
 

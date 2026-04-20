@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { CalendarDays, Check, ChevronDown, ChevronRight, Loader2, X, AlertTriangle } from "lucide-react";
 import { GlassCard, GlassButton, GlassTable, GlassTableRow, GlassTableCell, GlassPanel } from "./glass-card";
 import type { Deducao, Empenho, NotaFiscal, PendenciaDocumento, ProcessDates, ResumoFinanceiro } from "@/lib/data";
@@ -26,6 +26,7 @@ interface NotasFiscaisTableProps {
   logsSimples?: string[];
   nivelLog?: "simples" | "desenvolvedor";
   pendencias?: PendenciaDocumento[];
+  pendenciasExtraContent?: ReactNode;
   onLimparLogs?: () => void;
 }
 
@@ -87,18 +88,59 @@ function distribuirRetencaoPorNotas(notasFiscais: NotaFiscal[], valorTotalDeduca
 
 type LogLineType = "header" | "ok" | "run" | "err" | "warn" | "info";
 
+function normalizeLogText(value: string): string {
+  return value
+    .replace(/DeduÃ§Ã£o/g, "Dedução")
+    .replace(/ExecuÃ§Ã£o/g, "Execução")
+    .replace(/SituaÃ§Ã£o/g, "Situação")
+    .replace(/ConfirmaÃ§Ã£o/g, "Confirmação")
+    .replace(/revalidaÃ§Ã£o/g, "revalidação")
+    .replace(/ValidaÃ§Ã£o/g, "Validação")
+    .replace(/ObservaÃ§Ã£o/g, "Observação")
+    .replace(/MunicÃ­pio/g, "Município")
+    .replace(/CÃ³digo/g, "Código")
+    .replace(/NÃ£o/g, "Não")
+    .replace(/nÃ£o/g, "não")
+    .replace(/estÃ¡/g, "está")
+    .replace(/sÃ©rie/g, "série")
+    .replace(/SÃ©rie/g, "Série")
+    .replace(/lanÃ§/g, "lanç")
+    .replace(/Ã¡/g, "á")
+    .replace(/Ã¢/g, "â")
+    .replace(/Ã£/g, "ã")
+    .replace(/Ã§/g, "ç")
+    .replace(/Ã©/g, "é")
+    .replace(/Ãª/g, "ê")
+    .replace(/Ã­/g, "í")
+    .replace(/Ã³/g, "ó")
+    .replace(/Ã´/g, "ô")
+    .replace(/Ãµ/g, "õ")
+    .replace(/Ãº/g, "ú")
+    .replace(/Âº/g, "º")
+    .replace(/Âª/g, "ª")
+    .replace(/â€”/g, "—")
+    .replace(/â€“/g, "–")
+    .replace(/â€¢/g, "•")
+    .replace(/â†’/g, "→")
+    .replace(/âœ“/g, "✓")
+    .replace(/âœ—/g, "✗")
+    .replace(/âš /g, "⚠ ");
+}
+
 function parseLogLine(raw: string): { type: LogLineType; text: string } {
-  if (raw.startsWith("HEADER ")) return { type: "header", text: raw.slice(7) };
-  if (raw.startsWith("OK "))     return { type: "ok",     text: raw.slice(3) };
-  if (raw.startsWith("RUN "))    return { type: "run",    text: raw.slice(4) };
-  if (raw.startsWith("ERR "))    return { type: "err",    text: raw.slice(4) };
-  if (raw.startsWith("WARN "))   return { type: "warn",   text: raw.slice(5) };
+  const normalized = normalizeLogText(raw);
+
+  if (normalized.startsWith("HEADER ")) return { type: "header", text: normalized.slice(7) };
+  if (normalized.startsWith("OK "))     return { type: "ok",     text: normalized.slice(3) };
+  if (normalized.startsWith("RUN "))    return { type: "run",    text: normalized.slice(4) };
+  if (normalized.startsWith("ERR "))    return { type: "err",    text: normalized.slice(4) };
+  if (normalized.startsWith("WARN "))   return { type: "warn",   text: normalized.slice(5) };
   // Dev log lines — derive type from existing prefix conventions
-  if (raw.startsWith("✓"))  return { type: "ok",   text: raw.slice(1).trimStart() };
-  if (raw.startsWith("✗"))  return { type: "err",  text: raw.slice(1).trimStart() };
-  if (raw.startsWith("⚠"))  return { type: "warn", text: raw.slice(1).trimStart() };
-  if (raw.startsWith("→"))  return { type: "run",  text: raw.slice(1).trimStart() };
-  return { type: "info", text: raw };
+  if (normalized.startsWith("✓"))  return { type: "ok",   text: normalized.slice(1).trimStart() };
+  if (normalized.startsWith("✗"))  return { type: "err",  text: normalized.slice(1).trimStart() };
+  if (normalized.startsWith("⚠"))  return { type: "warn", text: normalized.slice(1).trimStart() };
+  if (normalized.startsWith("→"))  return { type: "run",  text: normalized.slice(1).trimStart() };
+  return { type: "info", text: normalized };
 }
 
 function SimpleLogLine({ raw }: { raw: string }) {
@@ -159,14 +201,33 @@ function SimpleLogLine({ raw }: { raw: string }) {
 }
 
 function DevLogLine({ raw }: { raw: string }) {
-  const { type } = parseLogLine(raw);
-  const cls =
-    type === "ok"   ? "text-success" :
-    type === "err"  ? "text-destructive" :
-    type === "warn" ? "text-warning" :
-    type === "run"  ? "text-primary" :
-                      "text-muted-foreground";
-  return <p className={`font-mono text-xs leading-relaxed ${cls}`}>{raw}</p>;
+  const { type, text } = parseLogLine(raw);
+  const lineClass =
+    type === "ok"
+      ? "border-success/20 bg-success/5"
+      : type === "err"
+        ? "border-destructive/20 bg-destructive/5"
+        : type === "warn"
+          ? "border-warning/20 bg-warning/5"
+          : type === "run"
+            ? "border-primary/20 bg-primary/5"
+            : "border-glass-border/60 bg-background/55";
+  const textClass =
+    type === "err"
+      ? "text-destructive"
+      : type === "warn"
+        ? "text-warning"
+        : type === "run"
+          ? "text-primary"
+          : type === "ok"
+            ? "text-success"
+            : "text-foreground/80";
+
+  return (
+    <div className={`rounded-xl border px-3 py-2 ${lineClass}`}>
+      <p className={`font-mono text-[12px] leading-6 ${textClass}`}>{text}</p>
+    </div>
+  );
 }
 
 export function NotasFiscaisTable({
@@ -181,6 +242,7 @@ export function NotasFiscaisTable({
   logsSimples = [],
   nivelLog = "desenvolvedor",
   pendencias = [],
+  pendenciasExtraContent,
   onLimparLogs,
 }: NotasFiscaisTableProps) {
   const [activeTab, setActiveTab] = useState<TabType>("notas");
@@ -287,14 +349,17 @@ export function NotasFiscaisTable({
         )}
 
         {activeTab === "pendencias" && (
-          <PendenciasPanel pendencias={pendencias} />
+          <div className="space-y-4">
+            {pendenciasExtraContent}
+            <PendenciasPanel pendencias={pendencias} />
+          </div>
         )}
 
         {activeTab === "log" && (
-          <div className="space-y-3">
-            <div className="flex items-center justify-between">
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
               <span className="text-xs text-muted-foreground">
-                {nivelLog === "simples" ? "Log Simplificado" : "Log Desenvolvedor"}
+                {nivelLog === "simples" ? "Log simplificado" : "Log desenvolvedor"}
                 {totalLogs > 0 && ` · ${totalLogs} linha${totalLogs !== 1 ? "s" : ""}`}
               </span>
               {onLimparLogs && (
@@ -315,7 +380,7 @@ export function NotasFiscaisTable({
                   Nenhum registro ainda — execute a automação para ver as confirmações.
                 </div>
               ) : (
-                <div className="px-1">
+                <div className="rounded-2xl border border-glass-border/70 bg-background/40 p-3">
                   {logsSimples.map((linha, i) => (
                     <SimpleLogLine key={i} raw={linha} />
                   ))}
@@ -326,7 +391,7 @@ export function NotasFiscaisTable({
                 {logs.length === 0 ? (
                   <p className="text-xs text-muted-foreground">Nenhum log disponível</p>
                 ) : (
-                  <div className="space-y-0.5">
+                  <div className="space-y-2">
                     {logs.map((linha, i) => (
                       <DevLogLine key={i} raw={linha} />
                     ))}

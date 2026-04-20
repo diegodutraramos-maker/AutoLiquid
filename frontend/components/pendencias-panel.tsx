@@ -41,6 +41,32 @@ function PendenciaIcon({ tipo }: { tipo: PendenciaDocumento["tipo"] }) {
   return <SearchCheck className="h-4 w-4 text-sky-700" />;
 }
 
+function renderPendenciaDescricao(descricao: string) {
+  const textoLimpo = descricao
+    .replace(/^⚠\s*/, "")
+    .replace(/^[^:]+ requer confer[êe]ncia manual:\s*/i, "")
+    .trim();
+
+  const segmentos = Array.from(
+    textoLimpo.matchAll(/([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ0-9 .()/-]+:)\s*([^:]+?)(?=(?:\s+[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ0-9 .()/-]+:)|$)/g)
+  );
+
+  if (segmentos.length === 0) {
+    return <p className="mt-2 text-sm leading-6 text-muted-foreground">{descricao}</p>;
+  }
+
+  return (
+    <div className="mt-2 space-y-1.5">
+      {segmentos.map((segmento, index) => (
+        <p key={`${segmento[1]}-${index}`} className="text-sm leading-6 text-muted-foreground">
+          <strong className="font-semibold text-foreground">{segmento[1]}</strong>{" "}
+          {segmento[2].trim()}
+        </p>
+      ))}
+    </div>
+  );
+}
+
 export function PendenciasPanel({ pendencias }: PendenciasPanelProps) {
   return (
     <GlassCard className="p-6">
@@ -80,9 +106,7 @@ export function PendenciasPanel({ pendencias }: PendenciasPanelProps) {
                       {pendencia.tipo}
                     </span>
                   </div>
-                  <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                    {pendencia.descricao}
-                  </p>
+                  {renderPendenciaDescricao(pendencia.descricao)}
                 </div>
               </div>
             </div>
