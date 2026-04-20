@@ -184,6 +184,7 @@ export interface DashboardInfo {
   habilitado: boolean
   periodo: string
   valorBruto: number
+  quantidadeProcessos: number
   ultimosProcessos: DashboardProcessoRecente[]
 }
 

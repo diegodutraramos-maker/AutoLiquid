@@ -541,6 +541,10 @@ def _montar_documento_processado(doc_id: str, dados: dict) -> dict[str, Any]:
         "lfNumero": dados.get("lf_numero", ""),
         "ugrNumero": dados.get("ugr_numero", ""),
         "vencimentoDocumento": dados.get("vencimento_documento", ""),
+        "usarContaPdf": bool(dados.get("usar_conta_pdf", True)),
+        "contaBanco": dados.get("conta_banco", ""),
+        "contaAgencia": dados.get("conta_agencia", ""),
+        "contaConta": dados.get("conta_conta", ""),
         "requiresCentroCusto": bool(dados.get("requires_centro_custo", False)),
         "dates": dados.get("dates", {"apuracao": "", "vencimento": ""}),
         "documento": {

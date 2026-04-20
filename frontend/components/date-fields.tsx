@@ -6,15 +6,16 @@ import type { ProcessDates } from "@/lib/data";
 interface DateFieldsProps {
   dates: ProcessDates;
   onDatesChange?: (dates: ProcessDates) => void;
+  compact?: boolean;
 }
 
-export function DateFields({ dates, onDatesChange }: DateFieldsProps) {
+export function DateFields({ dates, onDatesChange, compact = false }: DateFieldsProps) {
   return (
-    <GlassCard className="p-6">
-      <h3 className="mb-4 text-xs font-medium uppercase tracking-wider text-primary">
+    <GlassCard className={compact ? "p-4" : "p-6"}>
+      <h3 className={compact ? "mb-3 text-[11px] font-medium uppercase tracking-wider text-primary" : "mb-4 text-xs font-medium uppercase tracking-wider text-primary"}>
         Datas do Processo
       </h3>
-      <div className="grid gap-6 sm:grid-cols-2">
+      <div className={compact ? "grid gap-4 sm:grid-cols-2" : "grid gap-6 sm:grid-cols-2"}>
         <GlassInput
           label="Data de Apuração"
           type="text"

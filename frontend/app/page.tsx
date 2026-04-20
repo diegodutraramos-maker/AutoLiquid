@@ -403,20 +403,40 @@ export default function HomePage() {
         chromeActionDisabled={abrindoChrome || !apiDisponivel}
       />
 
-      <main className="relative mx-auto max-w-3xl px-6 py-12">
-        {/* Title Section */}
-        <div className="mb-12 text-center">
-          <h1 className="text-balance text-3xl font-bold tracking-tight text-foreground sm:text-4xl">
-            AutoLiquid
-          </h1>
-          <p className="mt-3 text-muted-foreground">
-            Automação contábil de liquidação · Comprasnet / SIAFI
-          </p>
-        </div>
+      <main className="relative mx-auto max-w-5xl px-5 py-6 sm:px-6 sm:py-8">
+        <section className="mb-5 rounded-[28px] border border-glass-border bg-glass-bg px-5 py-5 shadow-[0_28px_80px_-48px_rgba(15,23,42,0.4)] backdrop-blur-xl sm:px-6">
+          <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+            <div className="min-w-0">
+              <h1 className="text-balance text-2xl font-bold tracking-tight text-foreground sm:text-3xl">
+                Central de Liquidação
+              </h1>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Datas, envio do PDF e visão operacional em um único painel.
+              </p>
+            </div>
 
-        {/* Banner de nova versão */}
-        {bannerUpdate && (
-          <div className="mb-6 flex items-center justify-between gap-3 rounded-xl border border-violet-500/30 bg-violet-500/10 px-4 py-3">
+            <div className="grid gap-2 sm:grid-cols-2 lg:w-[420px]">
+              <div className="rounded-2xl border border-glass-border/70 bg-background/70 px-4 py-3">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                  Apuração
+                </p>
+                <p className="mt-1 text-base font-semibold text-foreground">
+                  {dates.apuracao || "Não informada"}
+                </p>
+              </div>
+              <div className="rounded-2xl border border-glass-border/70 bg-background/70 px-4 py-3">
+                <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                  Vencimento
+                </p>
+                <p className="mt-1 text-base font-semibold text-foreground">
+                  {dates.vencimento || "Não informado"}
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {bannerUpdate && (
+            <div className="mb-4 flex items-center justify-between gap-3 rounded-xl border border-violet-500/30 bg-violet-500/10 px-4 py-3">
             <div className="flex items-center gap-3 min-w-0">
               <ArrowDownToLine className="h-4 w-4 shrink-0 text-violet-700" />
               <p className="text-sm text-violet-700">
@@ -441,134 +461,156 @@ export default function HomePage() {
                 <X className="h-3.5 w-3.5" />
               </button>
             </div>
-          </div>
-        )}
-
-        {erroInicializacao && (
-          <div className="mb-8 rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-            {erroInicializacao}
-          </div>
-        )}
-
-        {/* Date Fields */}
-        <div className="mb-8">
-          <DateFields dates={dates} onDatesChange={setDates} />
-        </div>
-
-        {/* Upload Zone */}
-        <div className="mb-8">
-          <UploadZone
-            onFileSelect={handleFileSelect}
-            disabled={!apiDisponivel}
-            disabledMessage={
-              !apiDisponivel
-                ? "A seleção foi desativada porque a API web não está respondendo."
-                : undefined
-            }
-          />
-        </div>
-
-        {/* Action Button */}
-        <div className="mb-8 flex flex-col items-center gap-4">
-          <GlassButton
-            variant="secondary"
-            size="lg"
-            onClick={handleProcessar}
-            disabled={!selectedFile || isUploading || !apiDisponivel}
-          >
-            {isUploading ? (
-              <Loader2 className="h-5 w-5 animate-spin" />
-            ) : (
-              <FileUp className="h-5 w-5" />
-            )}
-            {isUploading ? "Processando PDF..." : "Processar Documento"}
-          </GlassButton>
-
-          {erro && (
-            <p className="max-w-xl text-center text-sm text-destructive">{erro}</p>
+            </div>
           )}
-        </div>
 
-        {/* Dashboard */}
-        <div className="mb-8 rounded-3xl border border-glass-border bg-glass-bg p-6 shadow-[0_28px_80px_-48px_rgba(15,23,42,0.4)] backdrop-blur-xl">
-          <div className="flex flex-col gap-4 border-b border-glass-border pb-5 md:flex-row md:items-start md:justify-between">
-            <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">
-                Dashboard Operacional
-              </p>
+          {erroInicializacao && (
+            <div className="mb-4 rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+              {erroInicializacao}
             </div>
+          )}
 
-            <div className="w-full md:w-44">
-              <label className="mb-2 block text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
-                Período
-              </label>
-              <select
-                value={dashboardPeriodo}
-                onChange={(event) =>
-                  setDashboardPeriodo(event.target.value as keyof typeof DASHBOARD_LABELS)
-                }
-                className="w-full rounded-xl border border-glass-border bg-background/80 px-3 py-2 text-sm text-foreground outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
-              >
-                {Object.entries(DASHBOARD_LABELS).map(([value, label]) => (
-                  <option key={value} value={value}>
-                    {label}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
+          <div className="grid gap-4 xl:grid-cols-[minmax(0,1.15fr)_minmax(340px,0.85fr)]">
+            <div className="space-y-4">
+              <DateFields dates={dates} onDatesChange={setDates} compact />
 
-          <div className="mt-5 grid gap-4 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
-            <div className="rounded-2xl border border-glass-border/70 bg-background/70 p-5">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                Valor Bruto
-              </p>
-              <p className="mt-3 text-2xl font-semibold text-foreground sm:text-3xl">
-                {carregandoDashboard ? "Carregando..." : formatCurrency(dashboard?.valorBruto ?? 0)}
-              </p>
-              <p className="mt-2 text-sm text-muted-foreground">
-                Total bruto lançado em {DASHBOARD_LABELS[dashboardPeriodo].toLowerCase()}.
-              </p>
-            </div>
+              <div className="rounded-3xl border border-glass-border bg-background/55 p-4 shadow-[0_18px_50px_-36px_rgba(15,23,42,0.4)]">
+                <UploadZone
+                  onFileSelect={handleFileSelect}
+                  compact
+                  disabled={!apiDisponivel}
+                  disabledMessage={
+                    !apiDisponivel
+                      ? "A seleção foi desativada porque a API web não está respondendo."
+                      : undefined
+                  }
+                />
 
-            <div className="rounded-2xl border border-glass-border/70 bg-background/70 p-5">
-              <div className="flex items-center justify-between gap-3">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                  Últimos 5 Processos
-                </p>
-                {dashboard?.habilitado === false ? (
-                  <span className="rounded-full border border-amber-500/25 bg-amber-500/10 px-2.5 py-1 text-[11px] font-medium text-amber-700">
-                    Supabase indisponível
-                  </span>
-                ) : null}
+                <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-h-5">
+                    {erro ? (
+                      <p className="max-w-xl text-sm text-destructive">{erro}</p>
+                    ) : (
+                      <p className="text-sm text-muted-foreground">
+                        Envie o PDF e siga direto para a conferência.
+                      </p>
+                    )}
+                  </div>
+
+                  <GlassButton
+                    variant="secondary"
+                    size="lg"
+                    onClick={handleProcessar}
+                    disabled={!selectedFile || isUploading || !apiDisponivel}
+                    className="w-full sm:w-auto"
+                  >
+                    {isUploading ? (
+                      <Loader2 className="h-5 w-5 animate-spin" />
+                    ) : (
+                      <FileUp className="h-5 w-5" />
+                    )}
+                    {isUploading ? "Processando PDF..." : "Processar Documento"}
+                  </GlassButton>
+                </div>
               </div>
+            </div>
 
-              <div className="mt-4 space-y-2">
-                {carregandoDashboard ? (
-                  <p className="text-sm text-muted-foreground">Carregando processos...</p>
-                ) : (dashboard?.ultimosProcessos?.length ?? 0) > 0 ? (
-                  dashboard!.ultimosProcessos.map((processo, index) => (
-                    <div
-                      key={`${processo.numeroProcesso}-${index}`}
-                      className="flex items-center gap-3 rounded-xl border border-glass-border/60 bg-secondary/20 px-3 py-3"
-                    >
-                      <span className="flex h-6 w-6 items-center justify-center rounded-full bg-muted text-xs font-semibold text-foreground">
-                        {index + 1}
-                      </span>
-                      <span className="min-w-0 truncate text-sm font-medium text-foreground">
-                        {processo.numeroProcesso}
-                      </span>
-                    </div>
-                  ))
-                ) : (
-                  <p className="text-sm text-muted-foreground">
-                    Ainda não há processos sincronizados para mostrar.
+            <div className="rounded-3xl border border-glass-border bg-background/55 p-4 shadow-[0_18px_50px_-36px_rgba(15,23,42,0.4)]">
+              <div className="flex flex-col gap-3 border-b border-glass-border pb-4 sm:flex-row sm:items-center sm:justify-between">
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">
+                    Dashboard Operacional
                   </p>
-                )}
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Resumo consolidado e últimos processos.
+                  </p>
+                </div>
+
+                <div className="w-full sm:w-40">
+                  <label className="mb-2 block text-[11px] font-medium uppercase tracking-[0.16em] text-muted-foreground">
+                    Período
+                  </label>
+                  <select
+                    value={dashboardPeriodo}
+                    onChange={(event) =>
+                      setDashboardPeriodo(event.target.value as keyof typeof DASHBOARD_LABELS)
+                    }
+                    className="w-full rounded-xl border border-glass-border bg-background/80 px-3 py-2 text-sm text-foreground outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
+                  >
+                    {Object.entries(DASHBOARD_LABELS).map(([value, label]) => (
+                      <option key={value} value={value}>
+                        {label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                <div className="rounded-2xl border border-glass-border/70 bg-background/70 p-4">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                    Valor Bruto
+                  </p>
+                  <p className="mt-2 text-2xl font-semibold text-foreground">
+                    {carregandoDashboard ? "Carregando..." : formatCurrency(dashboard?.valorBruto ?? 0)}
+                  </p>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Total em {DASHBOARD_LABELS[dashboardPeriodo].toLowerCase()}.
+                  </p>
+                </div>
+
+                <div className="rounded-2xl border border-glass-border/70 bg-background/70 p-4">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                    Processos
+                  </p>
+                  <p className="mt-2 text-2xl font-semibold text-foreground">
+                    {carregandoDashboard ? "Carregando..." : dashboard?.quantidadeProcessos ?? 0}
+                  </p>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    Processos únicos liquidados.
+                  </p>
+                </div>
+              </div>
+
+              <div className="mt-4 rounded-2xl border border-glass-border/70 bg-background/70 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                    Últimos 5 Processos
+                  </p>
+                  {dashboard?.habilitado === false ? (
+                    <span className="rounded-full border border-amber-500/25 bg-amber-500/10 px-2.5 py-1 text-[11px] font-medium text-amber-700">
+                      Supabase indisponível
+                    </span>
+                  ) : null}
+                </div>
+
+                <div className="mt-3 grid gap-2">
+                  {carregandoDashboard ? (
+                    <p className="text-sm text-muted-foreground">Carregando processos...</p>
+                  ) : (dashboard?.ultimosProcessos?.length ?? 0) > 0 ? (
+                    dashboard!.ultimosProcessos.map((processo, index) => (
+                      <div
+                        key={processo.numeroProcesso || `processo-${index}`}
+                        className="flex items-center gap-3 rounded-xl border border-glass-border/60 bg-secondary/20 px-3 py-2.5"
+                      >
+                        <span className="flex h-6 w-6 items-center justify-center rounded-full bg-muted text-xs font-semibold text-foreground">
+                          {index + 1}
+                        </span>
+                        <span className="min-w-0 truncate text-sm font-medium text-foreground">
+                          {processo.numeroProcesso}
+                        </span>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="text-sm text-muted-foreground">
+                      Ainda não há processos sincronizados para mostrar.
+                    </p>
+                  )}
+                </div>
               </div>
             </div>
           </div>
-        </div>
+        </section>
       </main>
 
       {/* Tabelas Modal */}

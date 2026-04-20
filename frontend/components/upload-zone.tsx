@@ -10,6 +10,7 @@ interface UploadZoneProps {
   acceptedFormats?: string[];
   disabled?: boolean;
   disabledMessage?: string;
+  compact?: boolean;
 }
 
 export function UploadZone({
@@ -17,6 +18,7 @@ export function UploadZone({
   acceptedFormats = [".pdf"],
   disabled = false,
   disabledMessage,
+  compact = false,
 }: UploadZoneProps) {
   const [isDragging, setIsDragging] = useState(false);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -83,7 +85,7 @@ export function UploadZone({
   };
 
   return (
-    <GlassCard className="p-6">
+    <GlassCard className={compact ? "p-4" : "p-6"}>
       <div
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
@@ -103,7 +105,8 @@ export function UploadZone({
         tabIndex={!selectedFile && !disabled ? 0 : -1}
         aria-disabled={disabled}
         className={cn(
-          "relative flex flex-col items-center justify-center rounded-xl border-2 border-dashed p-8 transition-all duration-300",
+          "relative flex flex-col items-center justify-center rounded-xl border-2 border-dashed transition-all duration-300",
+          compact ? "min-h-[180px] p-5" : "min-h-[260px] p-8",
           !selectedFile && !disabled && "cursor-pointer",
           isDragging
             ? "border-primary bg-primary/5"
@@ -137,13 +140,13 @@ export function UploadZone({
           </div>
         ) : (
           <>
-            <div className="mb-4 rounded-full bg-secondary/50 p-4">
-              <Upload className="h-6 w-6 text-muted-foreground" />
+            <div className={cn("rounded-full bg-secondary/50", compact ? "mb-3 p-3" : "mb-4 p-4")}>
+              <Upload className={cn("text-muted-foreground", compact ? "h-5 w-5" : "h-6 w-6")} />
             </div>
-            <p className="mb-1 text-center text-sm text-foreground">
+            <p className={cn("text-center text-foreground", compact ? "mb-1 text-sm font-medium" : "mb-1 text-sm")}>
               Arraste o PDF da Liquidação aqui
             </p>
-            <p className="mb-4 text-center text-sm text-muted-foreground">
+            <p className={cn("text-center text-muted-foreground", compact ? "mb-3 text-sm" : "mb-4 text-sm")}>
               ou clique para selecionar
             </p>
             <p className="text-xs text-muted-foreground">

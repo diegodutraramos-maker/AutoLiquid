@@ -132,9 +132,28 @@ def _upsert_execucao(cur, snapshot: dict[str, Any], processo_id: int, servidor_i
     resumo = snapshot.get("resumo", {}) or {}
     pendencias = snapshot.get("pendencias", []) or []
     status = _resolver_status_execucao(snapshot)
+    usar_conta_pdf = bool(snapshot.get("usarContaPdf", True))
+    conta_banco = str(snapshot.get("contaBanco") or "").strip() or None
+    conta_agencia = str(snapshot.get("contaAgencia") or "").strip() or None
+    conta_conta = str(snapshot.get("contaConta") or "").strip() or None
 
     execucao_id = None
-    if documento_id:
+    # Consolidamos por processo + servidor para evitar duplicacao por reanexo
+    # do mesmo PDF/documento ao longo do dia.
+    cur.execute(
+        """
+        select id
+        from execucoes
+        where processo_id = %s and servidor_id = %s
+        order by data_execucao desc, id desc
+        limit 1
+        """,
+        (processo_id, servidor_id),
+    )
+    row = cur.fetchone()
+    if row:
+        execucao_id = int(row["id"])
+    elif documento_id:
         cur.execute(
             "select id from execucoes where documento_id = %s order by id desc limit 1",
             (documento_id,),
@@ -158,8 +177,14 @@ def _upsert_execucao(cur, snapshot: dict[str, Any], processo_id: int, servidor_i
         str(snapshot.get("lfNumero") or "").strip() or None,
         str(snapshot.get("ugrNumero") or "").strip() or None,
         str(snapshot.get("vencimentoDocumento") or "").strip() or None,
+        usar_conta_pdf,
+        conta_banco,
+        conta_agencia,
+        conta_conta,
         str((snapshot.get("statusGeral", {}) or {}).get("descricao") or "").strip() or None,
     )
+
+    _garantir_colunas_operacionais(cur)
 
     if execucao_id is None:
         cur.execute(
@@ -168,9 +193,10 @@ def _upsert_execucao(cur, snapshot: dict[str, Any], processo_id: int, servidor_i
               processo_id, servidor_id, documento_id, bruto, deducoes, liquido,
               status, possui_divergencia, qtd_notas, qtd_deducoes,
               exige_intervencao_manual, lf_numero, ugr_numero,
-              vencimento_documento, observacoes
+              vencimento_documento, usar_conta_pdf, conta_banco,
+              conta_agencia, conta_conta, observacoes
             )
-            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             returning id
             """,
             payload,
@@ -196,6 +222,10 @@ def _upsert_execucao(cur, snapshot: dict[str, Any], processo_id: int, servidor_i
           lf_numero = %s,
           ugr_numero = %s,
           vencimento_documento = %s,
+          usar_conta_pdf = %s,
+          conta_banco = %s,
+          conta_agencia = %s,
+          conta_conta = %s,
           observacoes = %s,
           data_execucao = now()
         where id = %s
@@ -294,6 +324,33 @@ def _replace_deducoes(cur, execucao_id: int, deducoes: list[dict[str, Any]]) -> 
     )
 
 
+def _garantir_colunas_operacionais(cur) -> None:
+    cur.execute(
+        """
+        alter table execucoes
+        add column if not exists usar_conta_pdf boolean not null default true
+        """
+    )
+    cur.execute(
+        """
+        alter table execucoes
+        add column if not exists conta_banco text
+        """
+    )
+    cur.execute(
+        """
+        alter table execucoes
+        add column if not exists conta_agencia text
+        """
+    )
+    cur.execute(
+        """
+        alter table execucoes
+        add column if not exists conta_conta text
+        """
+    )
+
+
 def persistir_documento(snapshot: dict[str, Any]) -> int | None:
     """Salva ou atualiza o snapshot atual do documento no PostgreSQL."""
     if not postgres_habilitado():
@@ -337,6 +394,7 @@ def obter_dashboard(periodo: str = "semana") -> dict[str, Any]:
             "habilitado": False,
             "periodo": periodo,
             "valorBruto": 0,
+            "quantidadeProcessos": 0,
             "ultimosProcessos": [],
         }
 
@@ -345,19 +403,36 @@ def obter_dashboard(periodo: str = "semana") -> dict[str, Any]:
         with conn.cursor() as cur:
             cur.execute(
                 f"""
-                select coalesce(sum(e.bruto), 0) as valor_bruto
-                from execucoes e
-                where {where_periodo}
+                with execucoes_unicas as (
+                  select distinct on (e.processo_id)
+                    e.processo_id,
+                    e.bruto,
+                    e.data_execucao
+                  from execucoes e
+                  where {where_periodo}
+                  order by e.processo_id, e.data_execucao desc, e.id desc
+                )
+                select
+                  coalesce(sum(bruto), 0) as valor_bruto,
+                  count(*) as quantidade_processos
+                from execucoes_unicas
                 """
             )
             bruto_row = cur.fetchone() or {}
 
             cur.execute(
                 """
-                select p.numero_processo, e.data_execucao
-                from execucoes e
-                join processos p on p.id = e.processo_id
-                order by e.data_execucao desc
+                with execucoes_unicas as (
+                  select distinct on (e.processo_id)
+                    e.processo_id,
+                    e.data_execucao
+                  from execucoes e
+                  order by e.processo_id, e.data_execucao desc, e.id desc
+                )
+                select p.numero_processo, eu.data_execucao
+                from execucoes_unicas eu
+                join processos p on p.id = eu.processo_id
+                order by eu.data_execucao desc
                 limit 5
                 """
             )
@@ -373,5 +448,6 @@ def obter_dashboard(periodo: str = "semana") -> dict[str, Any]:
         "habilitado": True,
         "periodo": periodo,
         "valorBruto": float(bruto_row.get("valor_bruto") or 0),
+        "quantidadeProcessos": int(bruto_row.get("quantidade_processos") or 0),
         "ultimosProcessos": ultimos,
     }
