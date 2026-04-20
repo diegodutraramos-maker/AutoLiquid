@@ -36,6 +36,11 @@ from services.web_config_service import (
     salvar_configuracoes_web,
     salvar_tabela_web,
 )
+from services.postgres_service import (
+    obter_dashboard,
+    persistir_documento_com_log,
+    postgres_habilitado,
+)
 
 log = logging.getLogger(__name__)
 
@@ -553,6 +558,13 @@ def _montar_documento_processado(doc_id: str, dados: dict) -> dict[str, Any]:
     }
 
 
+def _sincronizar_documento_postgres(doc_id: str, dados: dict) -> None:
+    snapshot = _montar_documento_processado(doc_id, dados)
+    execucao_id = persistir_documento_com_log(snapshot)
+    if execucao_id is not None:
+        dados["postgres_execucao_id"] = execucao_id
+
+
 def _executar_uma_etapa(
     doc: dict,
     etapa_id: int,
@@ -679,7 +691,13 @@ def status_backend() -> dict[str, Any]:
     return {
         "chromeStatus": "pronto" if aberto else "erro",
         "chromePorta": porta,
+        "postgresEnabled": postgres_habilitado(),
     }
+
+
+@app.get("/api/dashboard")
+def dashboard(periodo: str = Query(default="semana")) -> dict[str, Any]:
+    return obter_dashboard(periodo)
 
 
 @app.post("/api/chrome/abrir")
@@ -753,6 +771,8 @@ async def processar_pdf(
             "cancel_requested": False,
         }
 
+        _sincronizar_documento_postgres(doc_id, DOCUMENTOS_PROCESSADOS[doc_id])
+
         return {"success": True, "documentoId": doc_id}
 
     except HTTPException:
@@ -791,7 +811,7 @@ def salvar_preenchimento_documento(doc_id: str, payload: ExecucaoPayload) -> dic
     doc["conta_banco"] = payload.contaBanco
     doc["conta_agencia"] = payload.contaAgencia
     doc["conta_conta"] = payload.contaConta
-
+    _sincronizar_documento_postgres(doc_id, doc)
     return _montar_documento_processado(doc_id, doc)
 
 
@@ -836,7 +856,7 @@ def executar_todas(doc_id: str, payload: ExecucaoPayload) -> dict[str, Any]:
                 playwright_obj.stop()
             except Exception:
                 pass
-
+    _sincronizar_documento_postgres(doc_id, doc)
     return _montar_documento_processado(doc_id, doc)
 
 
@@ -881,7 +901,7 @@ def executar_etapa(doc_id: str, etapa_id: int, payload: ExecucaoPayload) -> dict
                 playwright_obj.stop()
             except Exception:
                 pass
-
+    _sincronizar_documento_postgres(doc_id, doc)
     return _montar_documento_processado(doc_id, doc)
 
 
@@ -993,7 +1013,7 @@ def executar_deducao_individual(doc_id: str, ded_id: int, payload: ExecucaoPaylo
                 playwright_obj.stop()
             except Exception:
                 pass
-
+    _sincronizar_documento_postgres(doc_id, doc)
     return _montar_documento_processado(doc_id, doc)
 
 
@@ -1021,6 +1041,7 @@ def parar_execucao(doc_id: str) -> dict[str, Any]:
 
     doc = DOCUMENTOS_PROCESSADOS[doc_id]
     doc["cancel_requested"] = True
+    _sincronizar_documento_postgres(doc_id, doc)
     resultado = _montar_documento_processado(doc_id, doc)
     return {**resultado, "success": True, "mensagem": "Solicitação de parada enviada."}
 

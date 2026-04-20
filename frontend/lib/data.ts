@@ -148,6 +148,7 @@ export interface StopExecutionResponse extends DocumentoProcessado {
 export interface BackendStatus {
   chromeStatus: ChromeStatus
   chromePorta: number
+  postgresEnabled?: boolean
 }
 
 export type BackendStartupPhase =
@@ -172,6 +173,18 @@ export interface OpenChromeResponse {
   chromePorta: number
   url: string
   mensagem: string
+}
+
+export interface DashboardProcessoRecente {
+  numeroProcesso: string
+  dataExecucao?: string | null
+}
+
+export interface DashboardInfo {
+  habilitado: boolean
+  periodo: string
+  valorBruto: number
+  ultimosProcessos: DashboardProcessoRecente[]
 }
 
 export const MOCK_PROCESS_DATES: ProcessDates = {
@@ -308,6 +321,12 @@ async function apiFetch<T>(
 
 export async function fetchBackendStatus(): Promise<BackendStatus> {
   return apiFetch<BackendStatus>("/api/status")
+}
+
+export async function fetchDashboard(
+  periodo: "dia" | "semana" | "mes" | "este-mes" = "semana"
+): Promise<DashboardInfo> {
+  return apiFetch<DashboardInfo>(`/api/dashboard?periodo=${encodeURIComponent(periodo)}`)
 }
 
 export async function waitForBackendReady(

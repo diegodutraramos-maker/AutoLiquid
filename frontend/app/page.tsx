@@ -13,7 +13,9 @@ import { GlassButton } from "@/components/glass-card";
 import {
   abrirUrl,
   delay,
+  fetchDashboard,
   type BackendStartupProgress,
+  type DashboardInfo,
   MOCK_PROCESS_DATES,
   fetchBackendStatus,
   fetchAppSettings,
@@ -39,6 +41,13 @@ const INITIAL_STARTUP_STATE: BackendStartupProgress = {
   elapsedMs: 0,
 };
 
+const DASHBOARD_LABELS = {
+  dia: "Hoje",
+  semana: "Semana",
+  mes: "30 dias",
+  "este-mes": "Este mês",
+} as const;
+
 export default function HomePage() {
   const router = useRouter();
   const [dates, setDates] = useState<ProcessDates>(MOCK_PROCESS_DATES);
@@ -60,6 +69,13 @@ export default function HomePage() {
   const [startupError, setStartupError] = useState("");
   const [startupConcluido, setStartupConcluido] = useState(false);
   const [startupRunId, setStartupRunId] = useState(0);
+  const [dashboardPeriodo, setDashboardPeriodo] =
+    useState<keyof typeof DASHBOARD_LABELS>("semana");
+  const [dashboard, setDashboard] = useState<DashboardInfo | null>(null);
+  const [carregandoDashboard, setCarregandoDashboard] = useState(false);
+
+  const formatCurrency = (value: number) =>
+    new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(value);
 
   // Verificação de versão na inicialização (só quando API estiver disponível)
   useEffect(() => {
@@ -264,6 +280,34 @@ export default function HomePage() {
     };
   }, [startupConcluido]);
 
+  useEffect(() => {
+    if (!startupConcluido || !apiDisponivel) {
+      return;
+    }
+
+    let ativo = true;
+    const carregarDashboard = async () => {
+      setCarregandoDashboard(true);
+      try {
+        const data = await fetchDashboard(dashboardPeriodo);
+        if (!ativo) return;
+        setDashboard(data);
+      } catch (error) {
+        if (!ativo) return;
+        console.error("Erro ao carregar dashboard:", error);
+      } finally {
+        if (ativo) {
+          setCarregandoDashboard(false);
+        }
+      }
+    };
+
+    void carregarDashboard();
+    return () => {
+      ativo = false;
+    };
+  }, [apiDisponivel, dashboardPeriodo, startupConcluido]);
+
   const handleFileSelect = (file: File | null) => {
     setErro("");
     setSelectedFile(file);
@@ -405,6 +449,89 @@ export default function HomePage() {
             {erroInicializacao}
           </div>
         )}
+
+        <div className="mb-8 rounded-3xl border border-glass-border bg-glass-bg p-6 shadow-[0_28px_80px_-48px_rgba(15,23,42,0.4)] backdrop-blur-xl">
+          <div className="flex flex-col gap-4 border-b border-glass-border pb-5 md:flex-row md:items-start md:justify-between">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">
+                Dashboard Operacional
+              </p>
+              <p className="mt-2 text-sm text-muted-foreground">
+                Resumo consultado no Supabase. Nada do histórico está sendo salvo em banco local do app.
+              </p>
+            </div>
+
+            <div className="w-full md:w-44">
+              <label className="mb-2 block text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
+                Período
+              </label>
+              <select
+                value={dashboardPeriodo}
+                onChange={(event) =>
+                  setDashboardPeriodo(event.target.value as keyof typeof DASHBOARD_LABELS)
+                }
+                className="w-full rounded-xl border border-glass-border bg-background/80 px-3 py-2 text-sm text-foreground outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
+              >
+                {Object.entries(DASHBOARD_LABELS).map(([value, label]) => (
+                  <option key={value} value={value}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="mt-5 grid gap-4 lg:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)]">
+            <div className="rounded-2xl border border-glass-border/70 bg-background/70 p-5">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                Valor Bruto
+              </p>
+              <p className="mt-3 text-2xl font-semibold text-foreground sm:text-3xl">
+                {carregandoDashboard ? "Carregando..." : formatCurrency(dashboard?.valorBruto ?? 0)}
+              </p>
+              <p className="mt-2 text-sm text-muted-foreground">
+                Total bruto lançado em {DASHBOARD_LABELS[dashboardPeriodo].toLowerCase()}.
+              </p>
+            </div>
+
+            <div className="rounded-2xl border border-glass-border/70 bg-background/70 p-5">
+              <div className="flex items-center justify-between gap-3">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
+                  Últimos 5 Processos
+                </p>
+                {dashboard?.habilitado === false ? (
+                  <span className="rounded-full border border-amber-500/25 bg-amber-500/10 px-2.5 py-1 text-[11px] font-medium text-amber-700">
+                    Supabase indisponível
+                  </span>
+                ) : null}
+              </div>
+
+              <div className="mt-4 space-y-2">
+                {carregandoDashboard ? (
+                  <p className="text-sm text-muted-foreground">Carregando processos...</p>
+                ) : (dashboard?.ultimosProcessos?.length ?? 0) > 0 ? (
+                  dashboard!.ultimosProcessos.map((processo, index) => (
+                    <div
+                      key={`${processo.numeroProcesso}-${index}`}
+                      className="flex items-center gap-3 rounded-xl border border-glass-border/60 bg-secondary/20 px-3 py-3"
+                    >
+                      <span className="flex h-6 w-6 items-center justify-center rounded-full bg-muted text-xs font-semibold text-foreground">
+                        {index + 1}
+                      </span>
+                      <span className="min-w-0 truncate text-sm font-medium text-foreground">
+                        {processo.numeroProcesso}
+                      </span>
+                    </div>
+                  ))
+                ) : (
+                  <p className="text-sm text-muted-foreground">
+                    Ainda não há processos sincronizados para mostrar.
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
 
         {/* Date Fields */}
         <div className="mb-8">
