@@ -10,6 +10,7 @@ import time
 from comprasnet_base import (
     conectar,
     preencher_data,
+    preencher_texto,
     selecionar_opcao,
     ler_campo_data,
     normalizar_data,
@@ -353,55 +354,115 @@ def _abrir_aba_dados_basicos(pagina) -> None:
 
 
 def _coletar_linhas_notas_basicos(pagina) -> list[tuple[str, str, str]]:
-    try:
-        linhas = pagina.evaluate(
-            """() => {
-                const visivel = (el) => {
-                    if (!el) return false;
-                    const rect = el.getBoundingClientRect();
-                    const estilo = window.getComputedStyle(el);
-                    return rect.width > 0
-                        && rect.height > 0
-                        && estilo.visibility !== 'hidden'
-                        && estilo.display !== 'none';
-                };
+    ultimo_erro = None
 
-                const localizarPainel = () => {
-                    const marcadores = Array.from(document.querySelectorAll(
-                        "#btnSubmitFormSfDadosBasicos, #txtprocesso, #dtvenc, input[name='dtvenc']"
-                    )).filter((el) => visivel(el));
+    for _ in range(4):
+        try:
+            linhas = pagina.evaluate(
+                """() => {
+                    const visivel = (el) => {
+                        if (!el) return false;
+                        const rect = el.getBoundingClientRect();
+                        const estilo = window.getComputedStyle(el);
+                        return rect.width > 0
+                            && rect.height > 0
+                            && estilo.visibility !== 'hidden'
+                            && estilo.display !== 'none';
+                    };
 
-                    for (const marcador of marcadores) {
-                        const painel = marcador.closest("[role='tabpanel'], .tab-pane, .ui-tabs-panel, form, section, .panel");
-                        if (painel) {
-                            return painel;
+                    const normalizar = (valor) => String(valor || '')
+                        .replace(/\\s+/g, ' ')
+                        .trim()
+                        .toLowerCase();
+
+                    const localizarPainel = () => {
+                        const marcadores = Array.from(document.querySelectorAll(
+                            "#btnSubmitFormSfDadosBasicos, #txtprocesso, #dtvenc, input[name='dtvenc']"
+                        )).filter((el) => visivel(el));
+
+                        for (const marcador of marcadores) {
+                            const painel = marcador.closest("[role='tabpanel'], .tab-pane, .ui-tabs-panel, form, section, .panel");
+                            if (painel) {
+                                return painel;
+                            }
+                        }
+                        return document;
+                    };
+
+                    const painel = localizarPainel();
+                    const textoPainel = normalizar(painel.innerText || painel.textContent || '');
+
+                    const tabelaPorCabecalho = Array.from(painel.querySelectorAll('table')).find((el) => {
+                        if (!visivel(el)) return false;
+                        const texto = normalizar(el.innerText || el.textContent || '');
+                        return texto.includes('emitente')
+                            && texto.includes('data de emiss')
+                            && texto.includes('numero doc.origem')
+                            && texto.includes('valor');
+                    });
+
+                    const ancoraTitulo = Array.from(
+                        painel.querySelectorAll('div, span, strong, h1, h2, h3, h4, h5, h6, th, td')
+                    ).find((el) => {
+                        const texto = normalizar(el.innerText || el.textContent || '');
+                        return visivel(el) && texto.includes('dados de documentos de origem');
+                    });
+
+                    let tabela = tabelaPorCabecalho || null;
+
+                    if (!tabela && ancoraTitulo) {
+                        const containers = [
+                            ancoraTitulo.closest('.panel, .card, .table-responsive, .ibox, section, div'),
+                            ancoraTitulo.parentElement,
+                            ancoraTitulo.parentElement?.parentElement,
+                        ].filter(Boolean);
+
+                        for (const container of containers) {
+                            const candidata = Array.from(container.querySelectorAll('table')).find((el) => visivel(el));
+                            if (candidata) {
+                                tabela = candidata;
+                                break;
+                            }
                         }
                     }
-                    return document;
-                };
 
-                const painel = localizarPainel();
-                const tabela = Array.from(painel.querySelectorAll('table')).find((el) => {
-                    const texto = String(el.innerText || el.textContent || '').toLowerCase();
-                    return visivel(el)
-                        && texto.includes('dados de documentos de origem')
-                        && texto.includes('emitente')
-                        && texto.includes('valor');
-                });
+                    if (!tabela && textoPainel.includes('dados de documentos de origem')) {
+                        tabela = Array.from(painel.querySelectorAll('table')).find((el) => visivel(el)) || null;
+                    }
 
-                return Array.from((tabela || painel).querySelectorAll('table tbody tr, tbody tr'))
-                    .map((row) => Array.from(row.querySelectorAll('td'))
-                        .map((coluna) => String(coluna.innerText || coluna.textContent || '').trim()))
-                    .filter((colunas) => {
-                        const texto = colunas.join(' ').trim().toUpperCase();
-                        return colunas.length >= 4 && texto && !texto.includes('TOTAL');
-                    })
-                    .map((colunas) => [colunas[1] || '', colunas[2] || '', colunas[3] || '']);
-            }"""
-        )
-    except Exception:
-        return []
-    return [tuple(str(valor) for valor in linha) for linha in (linhas or [])]
+                    if (!tabela) return [];
+
+                    const linhas = Array.from(tabela.querySelectorAll('tbody tr, tr'))
+                        .map((row) => Array.from(row.querySelectorAll('td'))
+                            .map((coluna) => String(coluna.innerText || coluna.textContent || '').trim()))
+                        .filter((colunas) => {
+                            const texto = normalizar(colunas.join(' '));
+                            return colunas.length >= 4
+                                && !!texto
+                                && !texto.includes('emitente')
+                                && !texto.includes('numero doc.origem')
+                                && !texto.includes('número doc.origem')
+                                && !texto.includes('total');
+                        })
+                        .map((colunas) => ({
+                            emissao: colunas[1] || '',
+                            numero: colunas[2] || '',
+                            valor: colunas[3] || '',
+                        }))
+                        .filter((linha) => linha.numero || linha.valor);
+
+                    return linhas.map((linha) => [linha.emissao, linha.numero, linha.valor]);
+                }"""
+            )
+            if linhas:
+                return [tuple(str(valor) for valor in linha) for linha in linhas]
+        except Exception as exc:
+            ultimo_erro = exc
+        time.sleep(0.5)
+
+    if ultimo_erro:
+        print(f"  [Aviso] Falha ao coletar documentos de origem da Web: {ultimo_erro}")
+    return []
 
 
 def _preencher_vencimento_basicos(pagina, data_vencimento_usuario: str) -> str:
@@ -454,6 +515,37 @@ def _preencher_vencimento_basicos(pagina, data_vencimento_usuario: str) -> str:
             ultimo_erro = exc
 
     raise RuntimeError(str(ultimo_erro or "Campo #dtvenc não localizado."))
+
+
+def _ler_codigo_credor_basicos(pagina) -> str:
+    try:
+        campo = pagina.locator("#txtcodcredor:visible, input[name='codcredor']:visible").first
+        if campo.count() > 0:
+            return str(campo.input_value() or "").strip()
+    except Exception:
+        pass
+
+    try:
+        return str(pagina.evaluate(
+            """() => {
+                const visivel = (el) => !!el && el.offsetParent !== null;
+                const candidatos = Array.from(document.querySelectorAll('input, textarea'))
+                    .filter((el) => visivel(el))
+                    .filter((el) => {
+                        const bloco = el.closest('div, form, section, td, tr') || el.parentElement;
+                        const texto = String(bloco?.innerText || '').toLowerCase();
+                        const idName = `${el.id || ''} ${el.name || ''}`.toLowerCase();
+                        return texto.includes('código do credor')
+                            || texto.includes('codigo do credor')
+                            || idName.includes('credor')
+                            || idName.includes('cnpj');
+                    });
+                const alvo = candidatos[0];
+                return alvo ? String(alvo.value || '').trim() : '';
+            }"""
+        ) or "").strip()
+    except Exception:
+        return ""
 
 
 def executar(dados_extraidos, data_vencimento_usuario, *, pagina=None, playwright=None):
@@ -619,23 +711,39 @@ def executar(dados_extraidos, data_vencimento_usuario, *, pagina=None, playwrigh
         print(f"[3] Observação: {obs}")
         pagina.locator("textarea:visible").first.fill(obs)
 
-        # 4. Validações
-        erros = []
+        # 4. Ateste
         notas = dados_extraidos.get('Notas Fiscais', [])
+        ateste_pdf = normalizar_data(notas[0].get('Data de Ateste', '')) if notas else ""
+        if ateste_pdf:
+            print(f"[4] Ateste: {ateste_pdf}")
+            try:
+                preencher_data(pagina, "Ateste:", ateste_pdf)
+            except Exception as exc:
+                print(f"  → Aviso: preenchimento do ateste falhou ({exc}).")
+
+        # 5. Validações
+        erros = []
         if notas:
             try:
                 ateste_web = ler_campo_data(pagina, "Ateste:")
-                ateste_pdf = normalizar_data(notas[0].get('Data de Ateste', ''))
                 if ateste_web != ateste_pdf:
                     erros.append(f"Ateste: Web={ateste_web} | PDF={ateste_pdf}")
             except Exception as e:
                 erros.append(f"Ateste não verificado: {e}")
 
+            try:
+                cnpj_pdf = str(dados_extraidos.get("CNPJ", "") or "").strip()
+                cnpj_web = _ler_codigo_credor_basicos(pagina)
+                if cnpj_pdf and cnpj_web and cnpj_web != cnpj_pdf:
+                    erros.append(f"Código do Credor: Web={cnpj_web} | PDF={cnpj_pdf}")
+            except Exception as e:
+                erros.append(f"Código do Credor não verificado: {e}")
+
             linhas_tabela = _coletar_linhas_notas_basicos(pagina)
             erros.extend(_comparar_documentos_origem(notas, linhas_tabela))
 
-        # 5. Confirmar Dados Básicos
-        print("[5] Confirmando Dados Básicos...")
+        # 6. Confirmar Dados Básicos
+        print("[6] Confirmando Dados Básicos...")
         try:
             # Botão identificado no DOM: id="btnSubmitFormSfDadosBasicos"
             pagina.locator("#btnSubmitFormSfDadosBasicos:visible").first.click()

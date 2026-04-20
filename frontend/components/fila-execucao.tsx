@@ -125,22 +125,6 @@ export function FilaExecucao({
 
   return (
     <GlassCard className="flex h-full flex-col">
-      {/* Header with dates */}
-      {(apuracaoDate || vencimentoDate) && (
-        <div className="flex gap-2 border-b border-glass-border p-4">
-          {apuracaoDate && (
-            <span className="rounded-lg bg-destructive/20 px-3 py-1.5 text-xs font-medium text-destructive">
-              Apuração: {apuracaoDate}
-            </span>
-          )}
-          {vencimentoDate && (
-            <span className="rounded-lg bg-secondary px-3 py-1.5 text-xs font-medium text-foreground">
-              Vencimento: {vencimentoDate}
-            </span>
-          )}
-        </div>
-      )}
-
       <div className="p-6">
         <h3 className="mb-4 text-xs font-medium uppercase tracking-wider text-primary">
           Fila de Execução
@@ -159,30 +143,16 @@ export function FilaExecucao({
               <div key={etapa.id} className="space-y-1.5">
                 <button
                   type="button"
-                  onClick={() => {
-                    if (isDeducaoEtapa) {
-                      setDeducoesExpandidas((current) => !current);
-                      return;
-                    }
-                    onExecutarEtapa?.(etapa);
-                  }}
-                  disabled={isDeducaoEtapa ? false : !isClickable}
-                  title={
-                    isDeducaoEtapa
-                      ? deducoesExpandidas
-                        ? "Recolher deduções individuais"
-                        : "Expandir para ver e executar as deduções"
-                      : onExecutarEtapa
-                      ? "Clique para executar apenas esta etapa"
-                      : undefined
-                  }
+                  onClick={() => onExecutarEtapa?.(etapa)}
+                  disabled={!isClickable}
+                  title={onExecutarEtapa ? "Clique para executar apenas esta etapa" : undefined}
                   className={cn(
                     "flex w-full items-center gap-3 rounded-xl border px-3 py-3 text-left transition-all",
                     isAtiva
                       ? "border-primary/40 bg-primary/10 shadow-[0_18px_40px_-28px_rgba(79,70,229,0.75)]"
                       : "border-transparent bg-secondary/25",
-                    (isDeducaoEtapa || isClickable) && "hover:border-primary/30 hover:bg-secondary/50",
-                    !isDeducaoEtapa && !isClickable && "cursor-default opacity-90"
+                    isClickable && "hover:border-primary/30 hover:bg-secondary/50",
+                    !isClickable && "cursor-default opacity-90"
                   )}
                 >
                   <span
@@ -197,13 +167,6 @@ export function FilaExecucao({
                   <span className="min-w-0 flex-1 text-sm font-medium leading-snug text-foreground">
                     {etapa.nome}
                   </span>
-                  {isDeducaoEtapa ? (
-                    deducoesExpandidas ? (
-                      <ChevronDown className="h-4 w-4 text-muted-foreground" />
-                    ) : (
-                      <ChevronRight className="h-4 w-4 text-muted-foreground" />
-                    )
-                  ) : null}
                   <span
                     className={cn(
                       "shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-medium",
@@ -212,34 +175,37 @@ export function FilaExecucao({
                   >
                     {getStatusLabel(etapa.status, isAtiva)}
                   </span>
+                  {isDeducaoEtapa ? (
+                    <span
+                      role="button"
+                      tabIndex={0}
+                      aria-label={deducoesExpandidas ? "Recolher deduções" : "Expandir deduções"}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setDeducoesExpandidas((current) => !current);
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          event.stopPropagation();
+                          setDeducoesExpandidas((current) => !current);
+                        }
+                      }}
+                      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-background/70 hover:text-foreground"
+                    >
+                      {deducoesExpandidas ? (
+                        <ChevronDown className="h-4 w-4" />
+                      ) : (
+                        <ChevronRight className="h-4 w-4" />
+                      )}
+                    </span>
+                  ) : null}
                 </button>
 
                 {/* Sub-lista de deduções individuais */}
                 {isDeducaoEtapa && deducoesExpandidas && (
                   <div className="ml-4 space-y-1.5 border-l-2 border-glass-border pl-3">
-                    <div className="flex items-center justify-between gap-3 rounded-lg border border-primary/20 bg-primary/8 px-3 py-2">
-                      <div className="min-w-0">
-                        <p className="text-xs font-semibold uppercase tracking-[0.16em] text-primary">
-                          Etapa Dedução
-                        </p>
-                        <p className="mt-1 text-[11px] text-muted-foreground">
-                          Expanda para executar deduções específicas ou rode a etapa completa abaixo.
-                        </p>
-                      </div>
-                      <button
-                        type="button"
-                        disabled={!isClickable}
-                        onClick={() => onExecutarEtapa?.(etapa)}
-                        className={cn(
-                          "flex shrink-0 items-center gap-1 rounded-md border border-primary/25 bg-primary/10 px-2.5 py-1.5 text-[11px] font-medium text-primary transition-colors hover:bg-primary/15",
-                          !isClickable && "cursor-default opacity-50"
-                        )}
-                        title="Executar toda a etapa de deduções"
-                      >
-                        <Play className="h-3 w-3" />
-                        Executar etapa
-                      </button>
-                    </div>
                     {deducoes.map((ded) => {
                       const isDedAtiva = deducaoAtivaId === ded.id;
                       const dedClickable = Boolean(onExecutarDeducao) && !isExecutando;

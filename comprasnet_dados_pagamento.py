@@ -146,11 +146,25 @@ def _achar_botao_confirmar_pagamento(pagina):
     return pagina.evaluate_handle(
         """() => {
             const visivel = (el) => !!el && el.offsetParent !== null;
-            const botoes = Array.from(document.querySelectorAll('button, input[type="submit"], input[type="button"]'));
+            const seletores = [
+                "button[name='confirma-dados-pagamento']",
+                "input[name='confirma-dados-pagamento']",
+                "#btnSubmitFormSfDadosPagamento",
+                "button, input[type='submit'], input[type='button'], a, span"
+            ];
+            const botoes = [];
+            for (const seletor of seletores) {
+                for (const el of document.querySelectorAll(seletor)) {
+                    if (!botoes.includes(el)) botoes.push(el);
+                }
+            }
             return botoes.find((el) => {
                 if (!visivel(el)) return false;
                 const texto = String(el.textContent || el.value || '').trim().toLowerCase();
-                return texto.includes('confirmar') && texto.includes('pagamento');
+                const idName = String(el.id || '') + ' ' + String(el.name || '');
+                return (
+                    texto.includes('confirmar') && texto.includes('pagamento')
+                ) || /confirma.*pagamento/i.test(idName);
             }) || null;
         }"""
     )
@@ -287,10 +301,29 @@ def _preencher_observacao_modal(pagina, obs: str) -> bool:
         return False
 
 
-def _confirmar_dados_pagamento(pagina, descricao: str) -> None:
-    handle = _achar_botao_confirmar_pagamento(pagina)
-    _clicar_handle(pagina, handle, descricao)
-    pagina.wait_for_timeout(250)
+def _confirmar_dados_pagamento(pagina, descricao: str, obrigatorio: bool = True) -> bool:
+    ultimo_erro = None
+
+    for _ in range(3):
+        try:
+            _esperar_dados_pagamento_prontos(pagina, timeout_ms=5000)
+        except Exception:
+            pass
+
+        handle = _achar_botao_confirmar_pagamento(pagina)
+        try:
+            _clicar_handle(pagina, handle, descricao)
+            pagina.wait_for_timeout(250)
+            return True
+        except Exception as exc:
+            ultimo_erro = exc
+            time.sleep(0.6)
+
+    if obrigatorio:
+        raise RuntimeError(f"{descricao} nao encontrado.") from ultimo_erro
+
+    print(f"  [Aviso] {descricao} não apareceu novamente; seguindo sem erro.")
+    return False
 
 
 def _clicar_predoc(pagina) -> None:
@@ -689,8 +722,15 @@ def executar(dados_extraidos, data_vencimento_usuario, *, usar_conta_pdf=True, c
 
         print("[10] 2Âº Confirmar Dados de Pagamento...")
         try:
-            _confirmar_dados_pagamento(pagina, "2Âº Confirmar Dados de Pagamento")
-            print("  2Âº save concluÃ­do.")
+            confirmou_segunda_vez = _confirmar_dados_pagamento(
+                pagina,
+                "2Âº Confirmar Dados de Pagamento",
+                obrigatorio=False,
+            )
+            if confirmou_segunda_vez:
+                print("  2Âº save concluÃ­do.")
+            else:
+                print("  2Âº confirmar não foi necessário.")
         except Exception as e:
             erros.append(f"Erro ao confirmar Dados de Pagamento: {e}")
 

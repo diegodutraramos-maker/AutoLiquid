@@ -2,8 +2,6 @@
 
 import { Suspense, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import Link from "next/link";
-import { AlertTriangle, ArrowLeft } from "lucide-react";
 import { Header } from "@/components/header";
 import { DocumentoPanel } from "@/components/documento-panel";
 import { NotasFiscaisTable } from "@/components/notas-fiscais-table";
@@ -21,15 +19,6 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import {
   MOCK_DOCUMENTO,
   MOCK_DEDUCOES,
@@ -71,8 +60,6 @@ function ConferenciaPageContent() {
   const documentoId = searchParams.get("id");
   const filaRef = useRef<HTMLDivElement | null>(null);
   const execucaoAbortControllerRef = useRef<AbortController | null>(null);
-  const ultimoAvisoManualRef = useRef("");
-  const avisosManuaisDispensadosRef = useRef<Set<string>>(new Set());
   const ugrDialogDispensadoRef = useRef(false);
   const [documento, setDocumento] = useState<Documento>(MOCK_DOCUMENTO);
   const [resumo, setResumo] = useState<ResumoFinanceiro>(MOCK_RESUMO_FINANCEIRO);
@@ -102,7 +89,6 @@ function ConferenciaPageContent() {
     titulo: "Carregando documento",
     descricao: "O resumo operacional do documento será exibido em instantes.",
   });
-  const [avisoManual, setAvisoManual] = useState("");
   const [abrindoChrome, setAbrindoChrome] = useState(false);
   const [lfNumero, setLfNumero] = useState("");
   const [ugrNumero, setUgrNumero] = useState("");
@@ -125,20 +111,6 @@ function ConferenciaPageContent() {
   const temFatura = notasFiscais.some((nota) =>
     nota.tipo.toLowerCase().includes("fatura")
   );
-
-  const detectarAvisoManual = (mensagens: string[]) => {
-    const aviso = mensagens.find((mensagem) =>
-      mensagem.toLowerCase().includes("requer conferência manual")
-    );
-    if (
-      aviso &&
-      !avisosManuaisDispensadosRef.current.has(aviso) &&
-      aviso !== ultimoAvisoManualRef.current
-    ) {
-      ultimoAvisoManualRef.current = aviso;
-      setAvisoManual(aviso);
-    }
-  };
 
   const aplicarPayload = (payload: DocumentoProcessado) => {
     setDocumento(payload.documento);
@@ -187,12 +159,6 @@ function ConferenciaPageContent() {
             : "Execução em andamento..."
       );
     }
-
-    detectarAvisoManual([
-      ...(payload.documento.alertas ?? []),
-      ...payload.logs,
-    ]);
-
     const payloadTemFatura = payload.notasFiscais.some((nota) =>
       nota.tipo.toLowerCase().includes("fatura")
     );
@@ -815,20 +781,7 @@ function ConferenciaPageContent() {
         }
       />
 
-      <main className="relative mx-auto max-w-7xl px-6 py-8">
-        {/* Back button and title */}
-        <div className="mb-8 flex items-center gap-4">
-          <Link href="/">
-            <GlassButton variant="ghost" size="sm">
-              <ArrowLeft className="h-4 w-4" />
-              Voltar
-            </GlassButton>
-          </Link>
-          <h1 className="text-xl font-semibold text-foreground">
-            Conferência e Automação
-          </h1>
-        </div>
-
+      <main className="relative mx-auto max-w-[1600px] px-4 py-8 sm:px-6 xl:px-8">
         {erro && (
           <div className="mb-6 rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
             {erro}
@@ -841,18 +794,20 @@ function ConferenciaPageContent() {
             resumo={resumo}
             optanteSimples={Boolean(documento.optanteSimples)}
             hasDdf025={deducoes.some((deducao) => deducao.siafi === "DDF025")}
+            apuracaoDate={dates.apuracao}
+            vencimentoDate={dates.vencimento}
           />
         </div>
 
         {/* Main Grid Layout */}
-        <div className="grid gap-6 lg:grid-cols-[280px_1fr_320px]">
+        <div className="grid items-start gap-6 xl:grid-cols-[minmax(260px,320px)_minmax(720px,1.8fr)_minmax(300px,360px)]">
           {/* Left Column - Documento */}
           <div className="space-y-6">
             <DocumentoPanel documento={documento} resumo={resumo} />
           </div>
 
           {/* Center Column - Notas Fiscais */}
-          <div className="space-y-6">
+          <div className="min-w-0 space-y-6">
             <NotasFiscaisTable
               notasFiscais={notasFiscais}
               empenhos={empenhos}
@@ -876,7 +831,7 @@ function ConferenciaPageContent() {
           </div>
 
           {/* Right Column - Fila de Execução */}
-          <div ref={filaRef} className="space-y-6">
+          <div ref={filaRef} className="space-y-6 xl:min-w-[300px]">
             <FilaExecucao
               etapas={etapas}
               deducoes={deducoes}
@@ -939,34 +894,6 @@ function ConferenciaPageContent() {
           setIsTabelasOpen(true);
         }}
       />
-
-      <AlertDialog
-        open={Boolean(avisoManual)}
-        onOpenChange={(open) => {
-          if (!open) {
-            if (avisoManual) {
-              avisosManuaisDispensadosRef.current.add(avisoManual);
-            }
-            setAvisoManual("");
-          }
-        }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle className="flex items-center gap-2">
-              <AlertTriangle className="h-5 w-5 text-warning" />
-              Conferência manual necessária
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              {avisoManual}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogAction>Entendi</AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-
       <Dialog
         open={isFaturaDialogOpen}
         onOpenChange={(open) => {

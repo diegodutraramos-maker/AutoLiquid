@@ -2380,6 +2380,7 @@ def _revalidar_ddr001_antes_confirmar(
     nome_mun: str,
     cod_receita: str,
     iss_br: str,
+    aliquota_nf_pct: float,
     rid_pre: str,
     pdid_pre: str,
     erros: list,
@@ -2442,6 +2443,8 @@ def _revalidar_ddr001_antes_confirmar(
             valor_nf = _formatar_valor_br(nf.get("Valor", "0"))
             nf_id = f"sfpredocnumnf{pdid}"
             valor_nf_id = f"sfpredocvlrnf{pdid}"
+            aliquota_nf_id = f"sfpredocnumaliqnf{pdid}"
+            mun_nf_id = f"sfpredoccodmuninf{pdid}"
 
             if num_nf and _read_input_value(pagina, nf_id).strip() != num_nf:
                 print(f"    [Revalidacao DDR001] Numero da NF divergente em {nf_id} — repreenchendo.")
@@ -2455,6 +2458,34 @@ def _revalidar_ddr001_antes_confirmar(
                     valor_nf,
                     erros,
                     "Pre-Doc/Valor NF na revalidacao",
+                )
+
+            if str(_read_input_value(pagina, mun_nf_id) or "").strip() != str(cod_mun).strip():
+                print(f"    [Revalidacao DDR001] Municipio da NF divergente em {mun_nf_id} — repreenchendo.")
+                _preencher_municipio_por_codigo(
+                    pagina,
+                    mun_nf_id,
+                    f"municipioDeducaoPreDoc{pdid}",
+                    cod_mun,
+                    nome_mun,
+                    pdid,
+                    "municipioDeducaoPreDoc",
+                    erros,
+                    "Pre-Doc/Municipio NF na revalidacao",
+                )
+
+            valor_aliquota = _read_input_value(pagina, aliquota_nf_id)
+            try:
+                atual = float(str(valor_aliquota or "0").replace(".", "").replace(",", "."))
+            except Exception:
+                atual = None
+            if atual is None or abs(atual - float(aliquota_nf_pct or 0.0)) > 0.01:
+                print(f"    [Revalidacao DDR001] Aliquota da NF divergente em {aliquota_nf_id} — repreenchendo.")
+                _fill_aliquota_nf(
+                    pagina,
+                    aliquota_nf_id,
+                    aliquota_nf_pct,
+                    erros,
                 )
     except Exception as e:
         erros.append(f"Revalidacao DDR001/Pre-Doc: {e}")
@@ -2594,7 +2625,7 @@ def _preencher_ddr001_nf(pagina, nf: dict, idx: int, total: int,
         return False
 
     # â"€â"€ 12. PrÃ©-Doc (seção já aberta — _abrir_predoc_resiliente não reclica) ──
-    municipio_nf_nome = _get_any(dados, "Município da NF", "MunicÃ­pio da NF", default="") or nome_mun
+    municipio_nf_nome = nome_mun
     # Aliquota efetiva por NF = ISS_NF / Valor_NF x 100 (ex: 1706,07 / 68242,70 = 2,50%).
     # NAO usa aliquota_pct global (ISS_total / Base_Calculo_PDF) que reflete a taxa
     # municipal sobre a parcela de servicos (ex: 15,50%), gerando percentual errado.
@@ -2645,6 +2676,7 @@ def _preencher_ddr001_nf(pagina, nf: dict, idx: int, total: int,
         nome_mun,
         cod_receita,
         iss_br,
+        aliquota_predoc,
         rid_expandido,
         predoc_pdid_pre,
         erros,

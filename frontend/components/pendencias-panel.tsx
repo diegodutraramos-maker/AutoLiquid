@@ -44,8 +44,8 @@ function PendenciaIcon({ tipo }: { tipo: PendenciaDocumento["tipo"] }) {
 export function PendenciasPanel({ pendencias }: PendenciasPanelProps) {
   return (
     <GlassCard className="p-6">
-      <div className="flex items-start justify-between gap-4">
-        <div>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0">
           <p className="text-xs font-semibold uppercase tracking-[0.2em] text-primary">
             Pendências e Divergências
           </p>
@@ -53,7 +53,7 @@ export function PendenciasPanel({ pendencias }: PendenciasPanelProps) {
             Este resumo mostra o que bloqueia, o que diverge e o que merece conferência antes da execução.
           </p>
         </div>
-        <span className="rounded-full border border-glass-border bg-background/70 px-3 py-1 text-xs font-medium text-muted-foreground">
+        <span className="inline-flex w-fit shrink-0 self-start whitespace-nowrap rounded-full border border-glass-border bg-background/70 px-3 py-1 text-xs font-medium text-muted-foreground">
           {pendencias.length} item(ns)
         </span>
       </div>

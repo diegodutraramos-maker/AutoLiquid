@@ -196,7 +196,7 @@ export function NotasFiscaisTable({
     { id: "notas", label: "Notas Fiscais" },
     { id: "empenhos", label: "Empenhos" },
     { id: "deducoes", label: "Deduções" },
-    { id: "pendencias", label: `Pendências${pendencias.length ? ` (${pendencias.length})` : ""}` },
+    { id: "pendencias", label: "Pendências" },
     { id: "log", label: "Log de Execução" },
   ];
 
@@ -227,12 +227,12 @@ export function NotasFiscaisTable({
 
   return (
     <GlassCard className="overflow-hidden">
-      <div className="flex border-b border-glass-border">
+      <div className="flex flex-wrap border-b border-glass-border">
         {tabs.map((tab) => (
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
-            className={`px-6 py-3 text-sm font-medium transition-colors ${
+            className={`min-w-0 px-5 py-3 text-sm font-medium transition-colors sm:px-6 ${
               activeTab === tab.id
                 ? "border-b-2 border-primary text-foreground"
                 : "text-muted-foreground hover:text-foreground"
@@ -251,11 +251,11 @@ export function NotasFiscaisTable({
                 <GlassTableCell className="w-12 text-muted-foreground">
                   {index + 1}
                 </GlassTableCell>
-                <GlassTableCell>{nota.tipo}</GlassTableCell>
-                <GlassTableCell>{nota.nota}</GlassTableCell>
-                <GlassTableCell>{nota.emissao}</GlassTableCell>
-                <GlassTableCell className="text-primary">{nota.ateste}</GlassTableCell>
-                <GlassTableCell className="font-medium">
+                <GlassTableCell className="whitespace-nowrap">{nota.tipo}</GlassTableCell>
+                <GlassTableCell className="whitespace-nowrap">{nota.nota}</GlassTableCell>
+                <GlassTableCell className="whitespace-nowrap">{nota.emissao}</GlassTableCell>
+                <GlassTableCell className="whitespace-nowrap text-primary">{nota.ateste}</GlassTableCell>
+                <GlassTableCell className="whitespace-nowrap font-medium">
                   {formatCurrency(nota.valor)}
                 </GlassTableCell>
               </GlassTableRow>

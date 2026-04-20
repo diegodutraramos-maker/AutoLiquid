@@ -2,7 +2,9 @@
 
 import {
   AlertTriangle,
+  ArrowLeft,
   CheckCircle2,
+  CalendarDays,
   Landmark,
   Loader2,
   Receipt,
@@ -12,12 +14,16 @@ import {
 
 import { GlassCard, GlassPanel } from "@/components/glass-card";
 import type { ResumoFinanceiro, StatusGeralDocumento } from "@/lib/data";
+import Link from "next/link";
+import { GlassButton } from "@/components/glass-card";
 
 interface StatusOverviewProps {
   statusGeral: StatusGeralDocumento;
   resumo: ResumoFinanceiro;
   optanteSimples: boolean;
   hasDdf025: boolean;
+  apuracaoDate?: string;
+  vencimentoDate?: string;
 }
 
 function formatCurrency(value: number): string {
@@ -42,33 +48,68 @@ export function StatusOverview({
   resumo,
   optanteSimples,
   hasDdf025,
+  apuracaoDate,
+  vencimentoDate,
 }: StatusOverviewProps) {
-  const simplesStatus = optanteSimples
-    ? hasDdf025
-      ? {
-          tone: "border-amber-500/25 bg-amber-500/10 text-amber-700",
-          title: "Optante pelo Simples com DDF025 presente",
-          description: "A retenção DDF025 foi identificada junto com o enquadramento no Simples Nacional.",
-        }
-      : {
-          tone: "border-destructive/25 bg-destructive/10 text-destructive",
-          title: "Optante pelo Simples sem DDF025",
-          description: "Revise a retenção: a empresa aparece como optante pelo Simples, mas a dedução DDF025 não foi encontrada.",
-        }
-    : hasDdf025
-      ? {
-          tone: "border-destructive/25 bg-destructive/10 text-destructive",
-          title: "Não optante com DDF025 presente",
-          description: "Confira a retenção: a empresa não está marcada como optante pelo Simples, mas a dedução DDF025 foi lançada.",
-        }
-      : {
-          tone: "border-amber-500/25 bg-amber-500/10 text-amber-700",
-          title: "Não optante e sem DDF025",
-          description: "A empresa não consta como optante pelo Simples e a dedução DDF025 não foi identificada.",
-        };
+  const simplesStatus =
+    optanteSimples === hasDdf025
+      ? optanteSimples
+        ? {
+            tone: "border-amber-500/25 bg-amber-500/10 text-amber-700",
+            title: "Optante pelo Simples com DDF025 presente",
+            description:
+              "A retenção DDF025 foi identificada junto com o enquadramento no Simples Nacional.",
+          }
+        : {
+            tone: "border-amber-500/25 bg-amber-500/10 text-amber-700",
+            title: "Não optante e sem DDF025",
+            description:
+              "A empresa não consta como optante pelo Simples e a dedução DDF025 não foi identificada.",
+          }
+      : null;
 
   return (
     <GlassCard className="p-5">
+      <div className="mb-5 flex flex-col gap-4 border-b border-glass-border pb-5">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-3">
+              <Link href="/">
+                <GlassButton variant="ghost" size="sm">
+                  <ArrowLeft className="h-4 w-4" />
+                  Voltar
+                </GlassButton>
+              </Link>
+              <div className="min-w-0">
+                <h1 className="text-xl font-semibold text-foreground">
+                  Conferência e Automação
+                </h1>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Resumo operacional do documento e conferências antes da execução.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          {(apuracaoDate || vencimentoDate) && (
+            <div className="flex flex-wrap gap-2">
+              {apuracaoDate ? (
+                <span className="inline-flex items-center gap-2 rounded-xl border border-glass-border bg-background/70 px-3 py-2 text-xs font-medium text-foreground">
+                  <CalendarDays className="h-3.5 w-3.5 text-muted-foreground" />
+                  Apuração: {apuracaoDate}
+                </span>
+              ) : null}
+              {vencimentoDate ? (
+                <span className="inline-flex items-center gap-2 rounded-xl border border-glass-border bg-background/70 px-3 py-2 text-xs font-medium text-foreground">
+                  <CalendarDays className="h-3.5 w-3.5 text-muted-foreground" />
+                  Vencimento: {vencimentoDate}
+                </span>
+              ) : null}
+            </div>
+          )}
+        </div>
+      </div>
+
       <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
         <div className="min-w-0">
           <div className="flex flex-wrap items-center gap-3">
@@ -118,15 +159,17 @@ export function StatusOverview({
         </div>
       </div>
 
-      <div className={`mt-4 rounded-2xl border px-4 py-4 ${simplesStatus.tone}`}>
-        <div className="flex items-start gap-3">
-          <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
-          <div className="min-w-0">
-            <p className="text-sm font-semibold">{simplesStatus.title}</p>
-            <p className="mt-1 text-sm leading-6 opacity-90">{simplesStatus.description}</p>
+      {simplesStatus ? (
+        <div className={`mt-4 rounded-2xl border px-4 py-4 ${simplesStatus.tone}`}>
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0" />
+            <div className="min-w-0">
+              <p className="text-sm font-semibold">{simplesStatus.title}</p>
+              <p className="mt-1 text-sm leading-6 opacity-90">{simplesStatus.description}</p>
+            </div>
           </div>
         </div>
-      </div>
+      ) : null}
     </GlassCard>
   );
 }

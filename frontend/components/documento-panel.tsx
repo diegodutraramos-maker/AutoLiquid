@@ -19,9 +19,9 @@ function formatCnpj(cnpj: string): string {
 
 function InfoRow({ label, value, highlight = false }: { label: string; value: string; highlight?: boolean }) {
   return (
-    <div className="space-y-0.5">
+    <div className="min-w-0 space-y-0.5">
       <span className="text-xs uppercase tracking-wider text-muted-foreground">{label}</span>
-      <p className={highlight ? "font-medium text-primary" : "text-sm text-foreground"}>{value}</p>
+      <p className={highlight ? "break-words font-medium text-primary" : "break-words text-sm text-foreground"}>{value}</p>
     </div>
   );
 }
@@ -37,7 +37,7 @@ export function DocumentoPanel({ documento, resumo: _resumo }: DocumentoPanelPro
         Documento
       </h3>
 
-      <div className="space-y-4">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-1 2xl:grid-cols-2">
         <InfoRow label="CNPJ" value={formatCnpj(documento.cnpj)} />
         <InfoRow label="Processo" value={documento.processo} />
         <InfoRow label="Sol. Pagamento" value={documento.solPagamento} />

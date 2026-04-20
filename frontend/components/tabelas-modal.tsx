@@ -61,13 +61,14 @@ export function TabelasModal({
   const [datasets, setDatasets] = useState<Partial<Record<TableKey, TableDataset>>>({});
   const [drafts, setDrafts] = useState<Partial<Record<TableKey, TableRow[]>>>({});
   const [selectedRows, setSelectedRows] = useState<Partial<Record<TableKey, number>>>({});
-  const [loading, setLoading] = useState(false);
+  const [loadingTabs, setLoadingTabs] = useState<Partial<Record<TableKey, boolean>>>({});
   const [saving, setSaving] = useState(false);
   const [erro, setErro] = useState("");
   const [mensagem, setMensagem] = useState("");
 
   const currentDataset = datasets[activeTab];
   const currentRows = drafts[activeTab] ?? currentDataset?.rows ?? [];
+  const isActiveTabLoading = Boolean(loadingTabs[activeTab]);
 
   const visibleRows = useMemo(
     () =>
@@ -94,29 +95,47 @@ export function TabelasModal({
   useEffect(() => {
     if (!isOpen) return;
 
-    const carregarTab = async () => {
-      if (datasets[activeTab]) return;
-      setLoading(true);
-      setErro("");
-      setMensagem("");
+    let cancelled = false;
+
+    const carregarTab = async (tab: TableKey, options?: { silent?: boolean }) => {
+      if (datasets[tab] || loadingTabs[tab]) return;
+
+      setLoadingTabs((current) => ({ ...current, [tab]: true }));
+      if (!options?.silent && tab === activeTab) {
+        setErro("");
+        setMensagem("");
+      }
 
       try {
-        const data = await fetchTabela(activeTab);
-        setDatasets((current) => ({ ...current, [activeTab]: data }));
-        setDrafts((current) => ({ ...current, [activeTab]: data.rows }));
+        const data = await fetchTabela(tab);
+        if (cancelled) return;
+        setDatasets((current) => ({ ...current, [tab]: data }));
+        setDrafts((current) => ({ ...current, [tab]: data.rows }));
       } catch (error) {
+        if (cancelled || options?.silent || tab !== activeTab) return;
         setErro(
           error instanceof Error
             ? error.message
             : "Nao foi possivel carregar a tabela selecionada."
         );
       } finally {
-        setLoading(false);
+        if (cancelled) return;
+        setLoadingTabs((current) => ({ ...current, [tab]: false }));
       }
     };
 
-    carregarTab();
-  }, [activeTab, datasets, isOpen]);
+    void carregarTab(activeTab);
+
+    for (const tab of tabs) {
+      if (tab !== activeTab) {
+        void carregarTab(tab, { silent: true });
+      }
+    }
+
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab, datasets, isOpen, loadingTabs, tabs]);
 
   if (!isOpen) return null;
 
@@ -310,7 +329,7 @@ export function TabelasModal({
         )}
 
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-6 pb-4">
-          {loading ? (
+          {!currentDataset && isActiveTabLoading ? (
             <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
               Carregando tabela...
             </div>
@@ -319,7 +338,13 @@ export function TabelasModal({
               {erro}
             </div>
           ) : currentDataset ? (
-            <div className="min-h-0 h-[52vh] flex-1 overflow-x-auto overflow-y-scroll overscroll-contain rounded-2xl border border-glass-border bg-background/65 [touch-action:pan-y]">
+            <div className="relative min-h-0 h-[52vh] flex-1 overflow-hidden rounded-2xl border border-glass-border bg-background/65">
+              {isActiveTabLoading ? (
+                <div className="pointer-events-none absolute right-3 top-3 z-20 rounded-full border border-glass-border bg-background/90 px-3 py-1 text-xs font-medium text-muted-foreground shadow-sm backdrop-blur">
+                  Atualizando...
+                </div>
+              ) : null}
+            <div className="min-h-0 h-full overflow-x-auto overflow-y-scroll overscroll-contain [touch-action:pan-y]">
               <table className="min-w-full">
                 <thead className="sticky top-0 z-10 bg-background/95 backdrop-blur">
                   <tr className="border-b border-glass-border">
@@ -398,6 +423,7 @@ export function TabelasModal({
                   )}
                 </tbody>
               </table>
+            </div>
             </div>
           ) : (
             <div className="rounded-xl border border-glass-border bg-secondary/30 px-4 py-10 text-center text-sm text-muted-foreground">
