@@ -620,3 +620,12 @@ export async function obterVersao(): Promise<{ versao: string }> {
 export async function verificarAtualizacao(): Promise<VersaoInfo> {
   return apiFetch<VersaoInfo>("/versao/verificar", {}, { timeoutMs: 8000 })
 }
+
+
+export async function abrirUrl(url: string): Promise<void> {
+  await apiFetch<{ ok: boolean }>("/api/abrir-url", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ url }),
+  })
+}

@@ -1141,6 +1141,16 @@ def verificar_atualizacao() -> dict[str, Any]:
         }
 
 
+@app.post("/api/abrir-url")
+def abrir_url(body: dict[str, Any]) -> dict[str, Any]:
+    """Abre uma URL no navegador padrão do sistema."""
+    import webbrowser
+    url = str(body.get("url", "")).strip()
+    if url:
+        webbrowser.open(url)
+    return {"ok": True}
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="127.0.0.1", port=8000)

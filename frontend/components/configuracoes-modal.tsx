@@ -31,6 +31,7 @@ import {
   recarregarModulos,
   saveAppSettings,
   verificarAtualizacao,
+  abrirUrl,
   type AppSettings,
   type VersaoInfo,
 } from "@/lib/data";
@@ -74,6 +75,7 @@ export function ConfiguracoesModal({
   // Atualização
   const [verificandoUpdate, setVerificandoUpdate] = useState(false);
   const [infoUpdate, setInfoUpdate] = useState<VersaoInfo | null>(null);
+  const [baixando, setBaixando] = useState(false);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -449,30 +451,46 @@ export function ConfiguracoesModal({
                                   <p className="text-xs text-destructive/90 break-words">
                                     {infoUpdate.erro}
                                   </p>
-                                  <a
-                                    href={infoUpdate.url_download}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
+                                  <button
+                                    onClick={() => abrirUrl(infoUpdate.url_download)}
                                     className="inline-flex items-center gap-2 rounded-lg border border-destructive/30 bg-background/80 px-3 py-1.5 text-sm font-medium text-destructive transition-colors hover:bg-background"
                                   >
                                     <ArrowDownToLine className="h-3.5 w-3.5" />
                                     Abrir página de releases
-                                  </a>
+                                  </button>
                                 </div>
                               ) : infoUpdate.tem_atualizacao ? (
                                 <div className="rounded-xl border border-violet-500/30 bg-background/75 px-3 py-3 space-y-2">
                                   <p className="text-sm font-medium text-violet-700">
                                     Nova versão disponível: v{infoUpdate.versao_nova}
                                   </p>
-                                  <a
-                                    href={infoUpdate.url_download}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="inline-flex items-center gap-2 rounded-lg border border-violet-500/30 bg-violet-500/10 px-3 py-1.5 text-sm font-medium text-violet-700 transition-colors hover:bg-violet-500/20"
+                                  <button
+                                    disabled={baixando}
+                                    onClick={async () => {
+                                      setBaixando(true);
+                                      try {
+                                        await abrirUrl(infoUpdate.url_download);
+                                      } finally {
+                                        setBaixando(false);
+                                      }
+                                    }}
+                                    className="inline-flex items-center gap-2 rounded-lg border border-violet-500/30 bg-violet-500/10 px-3 py-1.5 text-sm font-medium text-violet-700 transition-colors hover:bg-violet-500/20 disabled:opacity-60 disabled:cursor-not-allowed"
                                   >
-                                    <ArrowDownToLine className="h-3.5 w-3.5" />
-                                    Baixar v{infoUpdate.versao_nova}
-                                  </a>
+                                    {baixando ? (
+                                      <>
+                                        <svg className="h-3.5 w-3.5 animate-spin" fill="none" viewBox="0 0 24 24">
+                                          <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                                          <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z" />
+                                        </svg>
+                                        Abrindo…
+                                      </>
+                                    ) : (
+                                      <>
+                                        <ArrowDownToLine className="h-3.5 w-3.5" />
+                                        Baixar v{infoUpdate.versao_nova}
+                                      </>
+                                    )}
+                                  </button>
                                 </div>
                               ) : (
                                 <div className="flex items-center gap-2 rounded-xl border border-emerald-500/20 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-700">
