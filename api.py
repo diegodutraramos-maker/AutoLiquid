@@ -16,6 +16,25 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+# ── Carrega variáveis de ambiente do arquivo .env ─────────────────────────────
+# Procura o .env em ordem:
+#   1. ~/.autoliquid/.env   (pasta do usuário — recomendado)
+#   2. Pasta do executável  (ao lado do .app no macOS / .exe no Windows)
+#   3. Diretório de trabalho atual
+try:
+    from dotenv import load_dotenv
+    _env_candidates = [
+        Path.home() / ".autoliquid" / ".env",
+        Path(sys.executable).parent / ".env",
+        Path(".env"),
+    ]
+    for _env_path in _env_candidates:
+        if _env_path.exists():
+            load_dotenv(_env_path)
+            break
+except Exception:
+    pass
+
 import requests
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware

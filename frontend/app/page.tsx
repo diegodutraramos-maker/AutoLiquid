@@ -450,14 +450,51 @@ export default function HomePage() {
           </div>
         )}
 
+        {/* Date Fields */}
+        <div className="mb-8">
+          <DateFields dates={dates} onDatesChange={setDates} />
+        </div>
+
+        {/* Upload Zone */}
+        <div className="mb-8">
+          <UploadZone
+            onFileSelect={handleFileSelect}
+            disabled={!apiDisponivel}
+            disabledMessage={
+              !apiDisponivel
+                ? "A seleção foi desativada porque a API web não está respondendo."
+                : undefined
+            }
+          />
+        </div>
+
+        {/* Action Button */}
+        <div className="mb-8 flex flex-col items-center gap-4">
+          <GlassButton
+            variant="secondary"
+            size="lg"
+            onClick={handleProcessar}
+            disabled={!selectedFile || isUploading || !apiDisponivel}
+          >
+            {isUploading ? (
+              <Loader2 className="h-5 w-5 animate-spin" />
+            ) : (
+              <FileUp className="h-5 w-5" />
+            )}
+            {isUploading ? "Processando PDF..." : "Processar Documento"}
+          </GlassButton>
+
+          {erro && (
+            <p className="max-w-xl text-center text-sm text-destructive">{erro}</p>
+          )}
+        </div>
+
+        {/* Dashboard */}
         <div className="mb-8 rounded-3xl border border-glass-border bg-glass-bg p-6 shadow-[0_28px_80px_-48px_rgba(15,23,42,0.4)] backdrop-blur-xl">
           <div className="flex flex-col gap-4 border-b border-glass-border pb-5 md:flex-row md:items-start md:justify-between">
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">
                 Dashboard Operacional
-              </p>
-              <p className="mt-2 text-sm text-muted-foreground">
-                Resumo consultado no Supabase. Nada do histórico está sendo salvo em banco local do app.
               </p>
             </div>
 
@@ -531,45 +568,6 @@ export default function HomePage() {
               </div>
             </div>
           </div>
-        </div>
-
-        {/* Date Fields */}
-        <div className="mb-8">
-          <DateFields dates={dates} onDatesChange={setDates} />
-        </div>
-
-        {/* Upload Zone */}
-        <div className="mb-8">
-          <UploadZone
-            onFileSelect={handleFileSelect}
-            disabled={!apiDisponivel}
-            disabledMessage={
-              !apiDisponivel
-                ? "A seleção foi desativada porque a API web não está respondendo."
-                : undefined
-            }
-          />
-        </div>
-
-        {/* Action Button */}
-        <div className="flex flex-col items-center gap-4">
-          <GlassButton
-            variant="secondary"
-            size="lg"
-            onClick={handleProcessar}
-            disabled={!selectedFile || isUploading || !apiDisponivel}
-          >
-            {isUploading ? (
-              <Loader2 className="h-5 w-5 animate-spin" />
-            ) : (
-              <FileUp className="h-5 w-5" />
-            )}
-            {isUploading ? "Processando PDF..." : "Processar Documento"}
-          </GlassButton>
-
-          {erro && (
-            <p className="max-w-xl text-center text-sm text-destructive">{erro}</p>
-          )}
         </div>
       </main>
 
