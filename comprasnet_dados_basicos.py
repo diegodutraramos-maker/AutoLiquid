@@ -432,9 +432,15 @@ def _coletar_linhas_notas_basicos(pagina) -> list[tuple[str, str, str]]:
 
                     if (!tabela) return [];
 
+                    // Extrai o texto de uma célula, incluindo valor de <input> se houver
+                    const textoCelula = (td) => {
+                        const input = td.querySelector('input[type="text"], input:not([type]), input[type="number"]');
+                        if (input) return String(input.value || '').trim();
+                        return String(td.innerText || td.textContent || '').trim();
+                    };
+
                     const linhas = Array.from(tabela.querySelectorAll('tbody tr, tr'))
-                        .map((row) => Array.from(row.querySelectorAll('td'))
-                            .map((coluna) => String(coluna.innerText || coluna.textContent || '').trim()))
+                        .map((row) => Array.from(row.querySelectorAll('td')).map(textoCelula))
                         .filter((colunas) => {
                             const texto = normalizar(colunas.join(' '));
                             return colunas.length >= 4

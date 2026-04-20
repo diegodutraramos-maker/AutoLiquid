@@ -97,17 +97,22 @@ def executar_ddr001(
                   f"datas_emissao={datas_emissao}")
 
         try:
-            aliquota_pct = (
-                float(normalizar_valor(_ded_valor(ded)))
-                / float(normalizar_valor(_ded_base_calculo(ded) or "1"))
-            ) * 100
-        except Exception:
-            aliquota_pct = 0.0
-
-        try:
             total_iss = float(normalizar_valor(_ded_valor(ded)))
         except Exception:
             total_iss = 0.0
+
+        # Alíquota = valor_deducao / soma_total_das_NFs * 100
+        # NÃO usar "Base Cálculo" da dedução — ela é a base do rateio parcial
+        # (ex: R$ 19.232,59), não o total das NFs (ex: R$ 119.232,59).
+        # Usar a base errada resulta em alíquota ~15,5% em vez dos 2,5% corretos.
+        try:
+            total_nf_val = sum(
+                float(normalizar_valor(n.get("Valor", "0") or "0"))
+                for n in notas
+            )
+            aliquota_pct = (total_iss / total_nf_val * 100) if total_nf_val > 0 else 0.0
+        except Exception:
+            aliquota_pct = 0.0
 
         print(
             f"  Município: {cod_mun} ({nome_mun})  "

@@ -167,14 +167,6 @@ export function FilaExecucao({
                   <span className="min-w-0 flex-1 text-sm font-medium leading-snug text-foreground">
                     {etapa.nome}
                   </span>
-                  <span
-                    className={cn(
-                      "shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-medium",
-                      getStatusBadgeClass(etapa.status, isAtiva)
-                    )}
-                  >
-                    {getStatusLabel(etapa.status, isAtiva)}
-                  </span>
                   {isDeducaoEtapa ? (
                     <span
                       role="button"
@@ -201,6 +193,14 @@ export function FilaExecucao({
                       )}
                     </span>
                   ) : null}
+                  <span
+                    className={cn(
+                      "shrink-0 rounded-full border px-2.5 py-1 text-[11px] font-medium",
+                      getStatusBadgeClass(etapa.status, isAtiva)
+                    )}
+                  >
+                    {getStatusLabel(etapa.status, isAtiva)}
+                  </span>
                 </button>
 
                 {/* Sub-lista de deduções individuais */}

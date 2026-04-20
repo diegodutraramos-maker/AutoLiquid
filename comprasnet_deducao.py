@@ -2515,14 +2515,31 @@ def _preencher_ddr001_nf(pagina, nf: dict, idx: int, total: int,
         return False
     print(f"    did={did}")
 
-    # â"€â"€ 3. SituaÃ§Ã£o â†’ DDR001 â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€â"€
-    # Espera o formulÃ¡rio recÃ©m-criado estar completamente inicializado ANTES de
-    # mudar a SituaÃ§Ã£o — evita que o AJAX de inicializaÃ§Ã£o resete o select.
+    # ── 3. Situação → DDR001 (com retry — AJAX pode resetar o select) ───────────
     try:
         _esperar_formulario_deducao_estabilizar(pagina, did, timeout_ms=15000)
     except Exception:
         pass
-    _select(pagina, f"sfdeducaocodsit{did}", "DDR001", erros, "SituaÃ§Ã£o")
+
+    _situacao_ok = False
+    for _tent_sit in range(3):
+        _select(pagina, f"sfdeducaocodsit{did}", "DDR001", erros, "Situação")
+        time.sleep(0.8)
+        try:
+            _val_sit = pagina.evaluate(
+                f"() => {{ const el = document.getElementById(‘sfdeducaocodsit{did}’); "
+                f"return el ? el.value : ‘’; }}"
+            )
+            if str(_val_sit or "").upper() == "DDR001":
+                _situacao_ok = True
+                break
+            print(f"    [DDR001] Situação resetada para ‘{_val_sit}’ pelo portal — retry {_tent_sit+1}/3")
+        except Exception:
+            pass
+    if not _situacao_ok:
+        erros.append(f"DDR001 NF {num_nf}: portal resetou situação — abortando esta entrada.")
+        return False
+
     try:
         _esperar_formulario_deducao_estabilizar(pagina, did, timeout_ms=15000)
     except Exception:
