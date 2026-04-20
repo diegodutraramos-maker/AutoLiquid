@@ -441,7 +441,25 @@ export function ConfiguracoesModal({
                                 <Tag className="h-3.5 w-3.5" />
                                 Versão atual: <span className="font-semibold text-foreground">v{infoUpdate.versao_atual}</span>
                               </div>
-                              {infoUpdate.tem_atualizacao ? (
+                              {infoUpdate.erro ? (
+                                <div className="rounded-xl border border-destructive/25 bg-destructive/10 px-3 py-3 space-y-2">
+                                  <p className="text-sm font-medium text-destructive">
+                                    Não foi possível consultar as releases do repositório.
+                                  </p>
+                                  <p className="text-xs text-destructive/90 break-words">
+                                    {infoUpdate.erro}
+                                  </p>
+                                  <a
+                                    href={infoUpdate.url_download}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="inline-flex items-center gap-2 rounded-lg border border-destructive/30 bg-background/80 px-3 py-1.5 text-sm font-medium text-destructive transition-colors hover:bg-background"
+                                  >
+                                    <ArrowDownToLine className="h-3.5 w-3.5" />
+                                    Abrir página de releases
+                                  </a>
+                                </div>
+                              ) : infoUpdate.tem_atualizacao ? (
                                 <div className="rounded-xl border border-violet-500/30 bg-background/75 px-3 py-3 space-y-2">
                                   <p className="text-sm font-medium text-violet-700">
                                     Nova versão disponível: v{infoUpdate.versao_nova}

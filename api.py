@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import requests
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -527,6 +528,7 @@ def _montar_documento_processado(doc_id: str, dados: dict) -> dict[str, Any]:
             "contrato": d.get("Número do Contrato", ""),
             "codigoIG": d.get("IG", ""),
             "tipoLiquidacao": tipo_liquidacao,
+            "optanteSimples": bool(dados.get("optante_simples", False)),
             "alertas": dados.get("alertas", []),
             "bancoPdf": d.get("Banco", ""),
             "agenciaPdf": d.get("Agência", ""),
@@ -722,6 +724,7 @@ async def processar_pdf(
 
         doc_id = str(uuid4())
         alertas: list[str] = []
+        simples = False
 
         # Verifica Simples Nacional
         cnpj_limpo = "".join(c for c in str(dados_extraidos.get("CNPJ", "")) if c.isdigit())
@@ -738,6 +741,7 @@ async def processar_pdf(
             "lf_numero": "",
             "ugr_numero": "",
             "vencimento_documento": "",
+            "optante_simples": bool(simples) if cnpj_limpo else False,
             "requires_centro_custo": requer_centro_custo(dados_extraidos),
             "dates": {"apuracao": apuracao, "vencimento": vencimento},
             "etapas": deepcopy(ETAPAS_BASE),
