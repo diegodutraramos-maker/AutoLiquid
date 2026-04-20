@@ -45,9 +45,12 @@ jobs:
 
       # ── Rust ────────────────────────────────────────────────────────────────
       - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
+        shell: bash
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --no-modify-path
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          source "$HOME/.cargo/env"
+          rustup target add ${{ matrix.target }}
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
