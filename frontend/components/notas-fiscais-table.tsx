@@ -3,10 +3,11 @@
 import { useState } from "react";
 import { CalendarDays, Check, ChevronDown, ChevronRight, Loader2, X, AlertTriangle } from "lucide-react";
 import { GlassCard, GlassButton, GlassTable, GlassTableRow, GlassTableCell, GlassPanel } from "./glass-card";
-import type { Deducao, Empenho, NotaFiscal, ProcessDates, ResumoFinanceiro } from "@/lib/data";
+import type { Deducao, Empenho, NotaFiscal, PendenciaDocumento, ProcessDates, ResumoFinanceiro } from "@/lib/data";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { PendenciasPanel } from "@/components/pendencias-panel";
 
-type TabType = "notas" | "empenhos" | "deducoes" | "log";
+type TabType = "notas" | "empenhos" | "deducoes" | "pendencias" | "log";
 
 interface DatasDeducao {
   apuracao: string;
@@ -24,6 +25,7 @@ interface NotasFiscaisTableProps {
   logs?: string[];
   logsSimples?: string[];
   nivelLog?: "simples" | "desenvolvedor";
+  pendencias?: PendenciaDocumento[];
   onLimparLogs?: () => void;
 }
 
@@ -178,6 +180,7 @@ export function NotasFiscaisTable({
   logs = [],
   logsSimples = [],
   nivelLog = "desenvolvedor",
+  pendencias = [],
   onLimparLogs,
 }: NotasFiscaisTableProps) {
   const [activeTab, setActiveTab] = useState<TabType>("notas");
@@ -193,6 +196,7 @@ export function NotasFiscaisTable({
     { id: "notas", label: "Notas Fiscais" },
     { id: "empenhos", label: "Empenhos" },
     { id: "deducoes", label: "Deduções" },
+    { id: "pendencias", label: `Pendências${pendencias.length ? ` (${pendencias.length})` : ""}` },
     { id: "log", label: "Log de Execução" },
   ];
 
@@ -280,6 +284,10 @@ export function NotasFiscaisTable({
               Nenhum empenho cadastrado
             </div>
           )
+        )}
+
+        {activeTab === "pendencias" && (
+          <PendenciasPanel pendencias={pendencias} />
         )}
 
         {activeTab === "log" && (

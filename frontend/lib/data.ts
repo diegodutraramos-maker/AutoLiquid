@@ -2,7 +2,7 @@ const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000"
 const DEFAULT_API_TIMEOUT_MS = 10000
 const EXECUTION_API_TIMEOUT_MS = 5 * 60 * 1000
-const DEFAULT_API_STARTUP_TIMEOUT_MS = 15000
+const DEFAULT_API_STARTUP_TIMEOUT_MS = 30000
 const DEFAULT_API_STARTUP_RETRY_MS = 750
 
 export type ChromeStatus = "pronto" | "carregando" | "erro"
@@ -22,6 +22,7 @@ export interface Documento {
   contrato: string
   codigoIG: string
   tipoLiquidacao: string
+  optanteSimples?: boolean
   alertas?: string[]
   bancoPdf?: string
   agenciaPdf?: string
@@ -188,6 +189,7 @@ export const MOCK_DOCUMENTO: Documento = {
   contrato: "—",
   codigoIG: "—",
   tipoLiquidacao: "Aguardando processamento",
+  optanteSimples: false,
   alertas: [],
 }
 

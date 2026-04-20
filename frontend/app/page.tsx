@@ -96,7 +96,7 @@ export default function HomePage() {
 
       try {
         const backendStatus = await waitForBackendReady({
-          timeoutMs: 20000,
+          timeoutMs: 30000,
           retryDelayMs: 650,
           onProgress: (progress) => {
             if (!ativo) return;
@@ -183,6 +183,28 @@ export default function HomePage() {
       ativo = false;
     };
   }, [startupRunId]);
+
+  useEffect(() => {
+    if (startupConcluido || !startupError) {
+      return;
+    }
+
+    let ativo = true;
+    const intervalId = window.setInterval(async () => {
+      try {
+        await fetchBackendStatus();
+        if (!ativo) return;
+        setStartupRunId((current) => current + 1);
+      } catch {
+        // continua aguardando a API aparecer sem interromper a tela
+      }
+    }, 2000);
+
+    return () => {
+      ativo = false;
+      window.clearInterval(intervalId);
+    };
+  }, [startupConcluido, startupError]);
 
   useEffect(() => {
     if (!startupConcluido) {

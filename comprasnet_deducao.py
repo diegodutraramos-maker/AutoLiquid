@@ -2677,72 +2677,95 @@ def _confirmar_com_datas_atomico(pagina, did: str, data_ddmmaaaa: str, erros: li
         dd, mm, aaaa = partes[0].zfill(2), partes[1].zfill(2), partes[2]
     iso = f"{aaaa}-{mm}-{dd}"
 
-    # Passo 0 — aguarda o botão Confirmar ficar habilitado (portal valida assíncrono)
-    # Após o predoc e campos principais serem preenchidos, o portal pode levar
-    # até ~10s para habilitar o botão (especialmente em DOM pesado com 4+ NFs).
-    try:
-        pagina.wait_for_function(
-            """(did) => {
-                const btn = document.getElementById('confirma-dados-deducao-' + did);
-                return !!btn && !btn.disabled;
-            }""",
-            did,
-            timeout=10000,
-        )
-    except Exception:
-        pass  # Continua mesmo se timeout — o evaluate abaixo reporta o estado real
+    ultimo_resultado = "SEM_TENTATIVA"
+    ultimo_erro_click = None
+    ultimo_erro_aguardo = None
 
-    # Passo 1 — seta as duas datas silenciosamente (sem eventos)
-    resultado = pagina.evaluate(
-        """([did, iso]) => {
-            const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-            const setData = (id) => {
-                const el = document.getElementById(id);
-                if (!el) return 'NAO_ENCONTRADO:' + id;
-                if (setter) setter.call(el, iso); else el.value = iso;
-                el.defaultValue = iso;
-                el.setAttribute('value', iso);
-                return el.value;
-            };
-            const vencVal = setData('sfdeducaodtvenc'      + did);
-            const pgtoVal = setData('sfdeducaodtpgtoreceb' + did);
-            const btn = document.getElementById('confirma-dados-deducao-' + did);
-            if (!btn)          return 'SEM_BTN:venc='      + vencVal + ':pgto=' + pgtoVal;
-            if (btn.disabled)  return 'BTN_DISABLED:venc=' + vencVal + ':pgto=' + pgtoVal;
-            btn.scrollIntoView({ block: 'center' });
-            return 'OK:venc=' + vencVal + ':pgto=' + pgtoVal;
-        }""",
-        [did, iso],
-    ) or "EVAL_ERRO"
-
-    print(f"    [Confirmar] did={did} iso={iso} | datas setadas → {resultado}")
-
-    if not resultado.startswith("OK"):
-        erros.append(f"Confirmar dedução (did={did}): {resultado}")
-        return False
-
-    # Passo 2 — clica via Playwright (trusted, aceito pelo portal)
-    try:
-        btn_loc = pagina.locator(f"#confirma-dados-deducao-{did}")
-        btn_loc.wait_for(state="visible", timeout=5000)
-        btn_loc.click()
-    except Exception as e_click:
-        # Fallback: clica pelo seletor de name
+    for tentativa in range(1, 4):
+        # Passo 0 — aguarda o botão Confirmar ficar habilitado (portal valida assíncrono)
+        # A partir da 4ª DDR001 o DOM fica mais pesado e o portal pode levar mais tempo.
         try:
-            pagina.locator("[name='confirma-dados-deducao']:visible").last.click()
+            pagina.wait_for_function(
+                """(did) => {
+                    const btn = document.getElementById('confirma-dados-deducao-' + did);
+                    return !!btn && !btn.disabled;
+                }""",
+                did,
+                timeout=20000,
+            )
         except Exception:
-            erros.append(f"Confirmar dedução (did={did}): não conseguiu clicar — {e_click}")
+            pass  # O evaluate abaixo registra o estado real do botão
+
+        # Passo 1 — seta as duas datas silenciosamente (sem eventos)
+        resultado = pagina.evaluate(
+            """([did, iso]) => {
+                const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+                const setData = (id) => {
+                    const el = document.getElementById(id);
+                    if (!el) return 'NAO_ENCONTRADO:' + id;
+                    if (setter) setter.call(el, iso); else el.value = iso;
+                    el.defaultValue = iso;
+                    el.setAttribute('value', iso);
+                    return el.value;
+                };
+                const vencVal = setData('sfdeducaodtvenc' + did);
+                const pgtoVal = setData('sfdeducaodtpgtoreceb' + did);
+                const btn = document.getElementById('confirma-dados-deducao-' + did);
+                if (!btn) return 'SEM_BTN:venc=' + vencVal + ':pgto=' + pgtoVal;
+                if (btn.disabled) return 'BTN_DISABLED:venc=' + vencVal + ':pgto=' + pgtoVal;
+                btn.scrollIntoView({ block: 'center' });
+                return 'OK:venc=' + vencVal + ':pgto=' + pgtoVal;
+            }""",
+            [did, iso],
+        ) or "EVAL_ERRO"
+
+        ultimo_resultado = resultado
+        print(f"    [Confirmar] tentativa {tentativa}/3 did={did} iso={iso} | datas setadas → {resultado}")
+
+        if not resultado.startswith("OK"):
+            if tentativa < 3:
+                time.sleep(1.2)
+                continue
+            erros.append(f"Confirmar dedução (did={did}): {resultado}")
             return False
 
-    # Passo 3 — aguarda confirmação
-    try:
-        _aguardar_confirmacao_deducao(pagina, did)
-        _aguardar_proxima_deducao_liberada(pagina, did)
-        print("    Dedução confirmada.")
-        return True
-    except Exception as e_aw:
-        erros.append(f"Confirmar dedução (did={did}): aguardar falhou — {e_aw}")
-        return False
+        # Passo 2 — clica via Playwright (trusted, aceito pelo portal)
+        try:
+            btn_loc = pagina.locator(f"#confirma-dados-deducao-{did}")
+            btn_loc.wait_for(state="visible", timeout=5000)
+            btn_loc.click()
+        except Exception as e_click:
+            ultimo_erro_click = e_click
+            try:
+                pagina.locator("[name='confirma-dados-deducao']:visible").last.click()
+                ultimo_erro_click = None
+            except Exception:
+                if tentativa < 3:
+                    time.sleep(1.2)
+                    continue
+                erros.append(f"Confirmar dedução (did={did}): não conseguiu clicar — {e_click}")
+                return False
+
+        # Passo 3 — aguarda confirmação
+        try:
+            _aguardar_confirmacao_deducao(pagina, did, timeout_ms=20000)
+            _aguardar_proxima_deducao_liberada(pagina, did, timeout_ms=20000)
+            print("    Dedução confirmada.")
+            return True
+        except Exception as e_aw:
+            ultimo_erro_aguardo = e_aw
+            print(f"    [Confirmar] tentativa {tentativa}/3 aguardando confirmação falhou: {e_aw}")
+            if tentativa < 3:
+                time.sleep(1.5)
+                continue
+
+    detalhe = ultimo_resultado
+    if ultimo_erro_click:
+        detalhe += f" | clique={ultimo_erro_click}"
+    if ultimo_erro_aguardo:
+        detalhe += f" | aguardo={ultimo_erro_aguardo}"
+    erros.append(f"Confirmar dedução (did={did}): {detalhe}")
+    return False
 
 
 def _preencher_deducao_darf_total(

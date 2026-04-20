@@ -1,6 +1,6 @@
 use std::{
     net::{SocketAddr, TcpStream},
-    path::Path,
+    path::{Path, PathBuf},
     process::Command as StdCommand,
     time::{Duration, Instant},
 };
@@ -24,10 +24,39 @@ fn wait_for_local_port(addr: SocketAddr, timeout: Duration) -> bool {
     false
 }
 
-fn sidecar_path() -> Option<std::path::PathBuf> {
+fn sidecar_dir() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
-    let dir = exe.parent()?;
-    Some(dir.join("api"))
+    exe.parent().map(|dir| dir.to_path_buf())
+}
+
+fn sidecar_paths() -> Vec<PathBuf> {
+    let Some(dir) = sidecar_dir() else {
+        return Vec::new();
+    };
+
+    let mut paths = Vec::new();
+
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|value| value.to_str()) else {
+                continue;
+            };
+
+            let is_api_sidecar = name == "api"
+                || name.starts_with("api-")
+                || name == "api.exe"
+                || name.starts_with("api-") && name.ends_with(".exe");
+
+            if is_api_sidecar {
+                paths.push(path);
+            }
+        }
+    }
+
+    paths.sort();
+    paths.dedup();
+    paths
 }
 
 #[cfg(target_family = "unix")]
@@ -56,14 +85,20 @@ fn prepare_macos_sidecar() {
         .and_then(|path| path.ancestors().nth(3))
         .map(|path| path.to_path_buf());
 
-    if let Some(path) = sidecar_path() {
-        ensure_executable(&path);
+    let sidecars = sidecar_paths();
+
+    if !sidecars.is_empty() {
+        for path in &sidecars {
+            ensure_executable(path);
+        }
 
         let mut quarantine_targets = Vec::new();
         if let Some(exe) = current_exe.as_ref() {
             quarantine_targets.push(exe.as_path());
         }
-        quarantine_targets.push(path.as_path());
+        for path in &sidecars {
+            quarantine_targets.push(path.as_path());
+        }
         if let Some(bundle_root) = bundle_root.as_ref() {
             quarantine_targets.push(bundle_root.as_path());
         }
@@ -75,7 +110,9 @@ fn prepare_macos_sidecar() {
                 .status();
         }
 
-        log::info!("Sidecar macOS preparado em {}", path.display());
+        for path in &sidecars {
+            log::info!("Sidecar macOS preparado em {}", path.display());
+        }
     } else {
         log::warn!("Nao foi possivel localizar o sidecar para preparar o macOS.");
     }
@@ -150,7 +187,7 @@ pub fn run() {
             let api_addr: SocketAddr = "127.0.0.1:8000"
                 .parse()
                 .expect("endereco local da API invalido");
-            if wait_for_local_port(api_addr, Duration::from_secs(2)) {
+            if wait_for_local_port(api_addr, Duration::from_secs(8)) {
                 log::info!("API interna pronta em http://127.0.0.1:8000");
             } else {
                 log::warn!(

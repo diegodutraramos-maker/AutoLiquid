@@ -9,13 +9,6 @@ interface DocumentoPanelProps {
   resumo: ResumoFinanceiro;
 }
 
-function formatCurrency(value: number): string {
-  return new Intl.NumberFormat("pt-BR", {
-    style: "currency",
-    currency: "BRL",
-  }).format(value);
-}
-
 function formatCnpj(cnpj: string): string {
   const d = cnpj.replace(/\D/g, "");
   if (d.length === 14) {
@@ -33,7 +26,11 @@ function InfoRow({ label, value, highlight = false }: { label: string; value: st
   );
 }
 
-export function DocumentoPanel({ documento, resumo }: DocumentoPanelProps) {
+export function DocumentoPanel({ documento, resumo: _resumo }: DocumentoPanelProps) {
+  const alertasExibidos = (documento.alertas ?? []).filter(
+    (alerta) => !String(alerta).toLowerCase().includes("simples nacional")
+  );
+
   return (
     <GlassCard className="p-6">
       <h3 className="mb-4 text-xs font-medium uppercase tracking-wider text-primary">
@@ -51,12 +48,12 @@ export function DocumentoPanel({ documento, resumo }: DocumentoPanelProps) {
         <InfoRow label="Cód. para (IG)" value={documento.codigoIG} highlight />
         <InfoRow label="Tipo Liquidação" value={documento.tipoLiquidacao} />
 
-        {documento.alertas && documento.alertas.length > 0 && (
+        {alertasExibidos.length > 0 && (
           <GlassPanel className="border-warning/30 bg-warning/10">
             <div className="flex items-start gap-2">
               <AlertTriangle className="mt-0.5 h-4 w-4 flex-shrink-0 text-warning" />
               <div className="space-y-1">
-                {documento.alertas.map((alerta, i) => (
+                {alertasExibidos.map((alerta, i) => (
                   <p key={i} className="text-xs text-warning">
                     {alerta}
                   </p>
@@ -65,26 +62,6 @@ export function DocumentoPanel({ documento, resumo }: DocumentoPanelProps) {
             </div>
           </GlassPanel>
         )}
-
-        <GlassPanel className="border-primary/20 bg-primary/5">
-          <h4 className="mb-3 text-xs font-medium uppercase tracking-wider text-primary">
-            Resumo Financeiro
-          </h4>
-          <div className="space-y-2">
-            <div className="flex justify-between text-sm">
-              <span className="text-muted-foreground">Bruto:</span>
-              <span className="text-foreground">{formatCurrency(resumo.bruto)}</span>
-            </div>
-            <div className="flex justify-between text-sm">
-              <span className="text-muted-foreground">Deduções:</span>
-              <span className="text-destructive">{formatCurrency(resumo.deducoes)}</span>
-            </div>
-            <div className="flex justify-between border-t border-glass-border pt-2 text-sm font-medium">
-              <span className="text-foreground">Líquido:</span>
-              <span className="text-success">{formatCurrency(resumo.liquido)}</span>
-            </div>
-          </div>
-        </GlassPanel>
       </div>
     </GlassCard>
   );
