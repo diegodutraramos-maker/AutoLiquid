@@ -1632,6 +1632,47 @@ def consultar_simples(body: dict[str, Any]) -> dict[str, Any]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# HISTÓRICO DE PROCESSOS
+# ─────────────────────────────────────────────────────────────────────────────
+
+class HistoricoBuscaPayload(BaseModel):
+    cnpj: str
+    contrato: str = ""
+    limite: int = 40
+
+
+@app.post("/api/historico/buscar")
+def buscar_historico(payload: HistoricoBuscaPayload) -> dict[str, Any]:
+    """Busca histórico de processos por CNPJ (+ contrato opcional) no Supabase."""
+    cnpj_limpo = "".join(c for c in payload.cnpj if c.isdigit())
+    if len(cnpj_limpo) != 14:
+        raise HTTPException(status_code=422, detail="CNPJ deve ter 14 dígitos.")
+
+    ps = _postgres_service()
+    if not ps.postgres_habilitado():
+        raise HTTPException(
+            status_code=503,
+            detail="Banco de dados não configurado. Verifique a variável DATABASE_URL.",
+        )
+
+    contrato = payload.contrato.strip() or None
+    limite = max(1, min(payload.limite, 100))
+
+    try:
+        processos = ps.buscar_historico_por_cnpj(cnpj_limpo, contrato, limite)
+    except Exception as exc:
+        log.exception("Erro ao buscar histórico de processos")
+        raise HTTPException(status_code=500, detail=f"Erro interno: {exc}") from exc
+
+    return {
+        "cnpj": cnpj_limpo,
+        "contrato": contrato or "",
+        "total": len(processos),
+        "processos": processos,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # CONSULTA NF-e POR CHAVE DE ACESSO (44 dígitos)
 # ─────────────────────────────────────────────────────────────────────────────
 

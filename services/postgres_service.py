@@ -538,6 +538,187 @@ def persistir_documento_com_log(snapshot: dict[str, Any]) -> int | None:
         return None
 
 
+def buscar_historico_por_cnpj(
+    cnpj_limpo: str,
+    contrato_filtro: str | None = None,
+    limite: int = 40,
+) -> list[dict[str, Any]]:
+    """
+    Busca histórico de processos por CNPJ (+ contrato opcional).
+
+    Retorna lista de processos ordenados pela execução mais recente,
+    cada um contendo suas execuções com NFs, deduções e pendências.
+    """
+    if not postgres_habilitado():
+        return []
+
+    with _get_connection() as conn:
+        with conn.cursor() as cur:
+
+            # ── 1. Processos + execuções ──────────────────────────────────
+            params_base: list[Any] = [cnpj_limpo]
+            where_contrato = ""
+            if contrato_filtro and contrato_filtro.strip():
+                where_contrato = "AND upper(p.contrato) LIKE upper(%s)"
+                params_base.append(f"%{contrato_filtro.strip()}%")
+
+            cur.execute(
+                f"""
+                SELECT
+                  p.id                      AS processo_id,
+                  p.numero_processo,
+                  p.cnpj,
+                  p.fornecedor,
+                  p.contrato,
+                  p.natureza,
+                  p.tipo_liquidacao,
+                  p.atualizado_em,
+                  e.id                      AS execucao_id,
+                  e.data_execucao,
+                  e.status,
+                  e.bruto,
+                  e.deducoes                AS total_deducoes,
+                  e.liquido,
+                  e.lf_numero,
+                  e.ugr_numero,
+                  e.vencimento_documento,
+                  e.possui_divergencia,
+                  e.exige_intervencao_manual,
+                  e.observacoes,
+                  s.nome                    AS servidor_nome,
+                  s.setor                   AS servidor_setor
+                FROM processos p
+                JOIN execucoes e ON e.processo_id = p.id
+                LEFT JOIN servidores s ON s.id = e.servidor_id
+                WHERE regexp_replace(p.cnpj, '[^0-9]', '', 'g') = %s
+                  {where_contrato}
+                ORDER BY e.data_execucao DESC, e.id DESC
+                LIMIT %s
+                """,
+                [*params_base, limite],
+            )
+            rows_exec = cur.fetchall()
+
+            if not rows_exec:
+                return []
+
+            exec_ids = [int(r["execucao_id"]) for r in rows_exec]
+
+            # ── 2. Notas fiscais ──────────────────────────────────────────
+            cur.execute(
+                """
+                SELECT execucao_id, numero_nota, tipo, emissao, ateste, valor
+                FROM notas_fiscais_execucao
+                WHERE execucao_id = ANY(%s)
+                ORDER BY execucao_id, emissao
+                """,
+                (exec_ids,),
+            )
+            notas_map: dict[int, list[dict]] = {}
+            for r in cur.fetchall():
+                eid = int(r["execucao_id"])
+                notas_map.setdefault(eid, []).append({
+                    "numero":  str(r["numero_nota"] or ""),
+                    "tipo":    str(r["tipo"] or ""),
+                    "emissao": str(r["emissao"] or ""),
+                    "ateste":  str(r["ateste"] or ""),
+                    "valor":   float(r["valor"] or 0),
+                })
+
+            # ── 3. Deduções ───────────────────────────────────────────────
+            cur.execute(
+                """
+                SELECT execucao_id, codigo, siafi, tipo, valor, base_calculo, status
+                FROM deducoes_execucao
+                WHERE execucao_id = ANY(%s)
+                ORDER BY execucao_id, tipo
+                """,
+                (exec_ids,),
+            )
+            deducoes_map: dict[int, list[dict]] = {}
+            for r in cur.fetchall():
+                eid = int(r["execucao_id"])
+                deducoes_map.setdefault(eid, []).append({
+                    "codigo":      str(r["codigo"] or ""),
+                    "siafi":       str(r["siafi"] or ""),
+                    "tipo":        str(r["tipo"] or ""),
+                    "valor":       float(r["valor"] or 0),
+                    "baseCalculo": float(r["base_calculo"] or 0),
+                    "status":      str(r["status"] or ""),
+                })
+
+            # ── 4. Pendências ─────────────────────────────────────────────
+            cur.execute(
+                """
+                SELECT execucao_id, tipo, titulo, descricao, resolvida
+                FROM execucao_pendencias
+                WHERE execucao_id = ANY(%s)
+                ORDER BY execucao_id, tipo
+                """,
+                (exec_ids,),
+            )
+            pendencias_map: dict[int, list[dict]] = {}
+            for r in cur.fetchall():
+                eid = int(r["execucao_id"])
+                pendencias_map.setdefault(eid, []).append({
+                    "tipo":      str(r["tipo"] or ""),
+                    "titulo":    str(r["titulo"] or ""),
+                    "descricao": str(r["descricao"] or ""),
+                    "resolvida": bool(r["resolvida"]),
+                })
+
+    # ── Montar estrutura agrupada por processo ────────────────────────────────
+    def _fmt(v: Any) -> str | None:
+        if v is None:
+            return None
+        return v.isoformat() if hasattr(v, "isoformat") else str(v)
+
+    processos: dict[int, dict] = {}
+    for row in rows_exec:
+        pid = int(row["processo_id"])
+        eid = int(row["execucao_id"])
+
+        if pid not in processos:
+            processos[pid] = {
+                "numeroProcesso": str(row["numero_processo"] or ""),
+                "cnpj":           str(row["cnpj"] or ""),
+                "fornecedor":     str(row["fornecedor"] or ""),
+                "contrato":       str(row["contrato"] or ""),
+                "natureza":       str(row["natureza"] or ""),
+                "tipoLiquidacao": str(row["tipo_liquidacao"] or ""),
+                "atualizadoEm":   _fmt(row["atualizado_em"]),
+                "execucoes":      [],
+            }
+
+        processos[pid]["execucoes"].append({
+            "id":                  eid,
+            "dataExecucao":        _fmt(row["data_execucao"]),
+            "status":              str(row["status"] or ""),
+            "bruto":               float(row["bruto"] or 0),
+            "totalDeducoes":       float(row["total_deducoes"] or 0),
+            "liquido":             float(row["liquido"] or 0),
+            "lfNumero":            str(row["lf_numero"] or ""),
+            "ugrNumero":           str(row["ugr_numero"] or ""),
+            "vencimentoDocumento": str(row["vencimento_documento"] or ""),
+            "possuiDivergencia":   bool(row["possui_divergencia"]),
+            "exigeIntervencao":    bool(row["exige_intervencao_manual"]),
+            "observacoes":         str(row["observacoes"] or ""),
+            "servidorNome":        str(row["servidor_nome"] or ""),
+            "servidorSetor":       str(row["servidor_setor"] or ""),
+            "notasFiscais":        notas_map.get(eid, []),
+            "deducoes":            deducoes_map.get(eid, []),
+            "pendencias":          pendencias_map.get(eid, []),
+        })
+
+    # Ordena processos pelo data_execucao mais recente
+    resultado = list(processos.values())
+    resultado.sort(
+        key=lambda p: p["execucoes"][0]["dataExecucao"] or "" if p["execucoes"] else "",
+        reverse=True,
+    )
+    return resultado
+
+
 def _where_periodo(periodo: str) -> str:
     periodo = str(periodo or "semana").strip().lower()
     if periodo == "dia":

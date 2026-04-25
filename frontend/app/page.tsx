@@ -9,7 +9,7 @@ import { UploadZone } from "@/components/upload-zone";
 import { TabelasModal } from "@/components/tabelas-modal";
 import { ConfiguracoesModal } from "@/components/configuracoes-modal";
 import { GlassButton } from "@/components/glass-card";
-import { CnpjChecker, NfeConsulta, IssPortais } from "@/components/liquidacao";
+import { CnpjChecker, NfeConsulta, IssPortais, HistoricoBusca } from "@/components/liquidacao";
 import {
   abrirUrl,
   delay,
@@ -564,6 +564,7 @@ export default function HomePage() {
               <IssPortais />
               <CnpjChecker />
               <NfeConsulta />
+              <HistoricoBusca />
             </div>
           )}
 
