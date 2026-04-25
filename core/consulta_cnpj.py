@@ -1,26 +1,19 @@
 """
-Consulta de CNPJ e Simples Nacional.
+Consulta de CNPJ e Simples Nacional via BrasilAPI.
 
-Estratégia:
-  1. Tenta as 3 fontes EM PARALELO por rodada.
-  2. Se a primeira fonte que responder já trouxer optante_simples definido
-     (True ou False), retorna imediatamente.
-  3. Se todas as fontes da rodada retornarem optante_simples=None,
-     aguarda _DELAY_RETRY segundos e tenta novamente (até _MAX_TENTATIVAS).
-  4. Resultado bem-sucedido fica em cache de memória (_CACHE) para
-     evitar chamadas repetidas durante a mesma sessão.
+Usa exclusivamente a BrasilAPI (brasilapi.com.br) que é a fonte mais
+rápida e confiável para o campo opcao_pelo_simples.
+Resultados bem-sucedidos ficam em cache de memória (TTL 1 h).
 """
 from __future__ import annotations
 
 import time
 import threading
-from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
-_TIMEOUT = 5          # segundos por chamada HTTP
-_MAX_TENTATIVAS = 2   # tentativas quando simples=None (1 extra se falhar)
-_DELAY_RETRY = 1.0    # segundos entre tentativas
+_TIMEOUT = 4   # segundos — BrasilAPI costuma responder em <1 s
+_URL = "https://brasilapi.com.br/api/cnpj/v1/{}"
 
 _HEADERS = {
     "User-Agent": "Mozilla/5.0 (compatible; AutoLiquid/1.0)",
@@ -42,160 +35,74 @@ def _cache_get(cnpj: str) -> dict | None:
 
 
 def _cache_set(cnpj: str, dados: dict) -> None:
-    # Só cacheia se trouxer resultado completo (simples definido)
+    """Só armazena quando optante_simples é definitivo (True ou False)."""
     if dados.get("optante_simples") is not None:
         with _cache_lock:
             _CACHE[cnpj] = (dados, time.time())
 
 
-# ── Fontes externas ───────────────────────────────────────────────────────────
+# ── Consulta BrasilAPI ────────────────────────────────────────────────────────
 
-def _brasilapi(cnpj: str) -> dict | None:
-    try:
-        r = requests.get(
-            f"https://brasilapi.com.br/api/cnpj/v1/{cnpj}",
-            timeout=_TIMEOUT, headers=_HEADERS,
-        )
-        if r.status_code == 200:
-            d = r.json()
-            simples = d.get("opcao_pelo_simples")
-            # opcao_pelo_simples: True = optante, False = não optante, None = sem info
-            return {
-                "razao_social": str(d.get("razao_social") or "").strip(),
-                "optante_simples": simples,
-            }
-    except Exception:
-        pass
-    return None
-
-
-def _cnpjws(cnpj: str) -> dict | None:
-    try:
-        r = requests.get(
-            f"https://publica.cnpj.ws/cnpj/{cnpj}",
-            timeout=_TIMEOUT, headers=_HEADERS,
-        )
-        if r.status_code == 200:
-            d = r.json()
-            s = str((d.get("simples") or {}).get("simples") or "").lower()
-            optante = True if s == "sim" else (False if s in ("não", "nao", "não") else None)
-            return {
-                "razao_social": str(d.get("razao_social") or "").strip(),
-                "optante_simples": optante,
-            }
-    except Exception:
-        pass
-    return None
-
-
-def _receitaws(cnpj: str) -> dict | None:
-    try:
-        r = requests.get(
-            f"https://receitaws.com.br/v1/cnpj/{cnpj}",
-            timeout=_TIMEOUT, headers=_HEADERS,
-        )
-        if r.status_code == 200:
-            d = r.json()
-            if d.get("status") == "ERROR":
-                return None
-            s = str(d.get("simples") or "").upper()
-            return {
-                "razao_social": str(d.get("nome") or "").strip(),
-                "optante_simples": True if s == "SIM" else (False if s in ("NÃO", "NAO") else None),
-            }
-    except Exception:
-        pass
-    return None
-
-
-# ── Lógica principal ──────────────────────────────────────────────────────────
-
-def _uma_rodada(cnpj_limpo: str) -> dict | None:
+def _consultar_brasilapi(cnpj: str) -> dict:
     """
-    Executa uma rodada de consulta paralela nas 3 fontes.
-
-    Retorna:
-      - dict com optante_simples definido → resultado completo
-      - dict com optante_simples=None     → tem razão social mas sem info Simples
-      - None                              → todas as fontes falharam
+    Chama a BrasilAPI e retorna dict com razao_social, optante_simples e nao_encontrado.
+    Nunca lança exceção.
     """
-    fontes = [_brasilapi, _cnpjws, _receitaws]
-    melhor: dict | None = None  # razão social mas optante_simples=None
+    try:
+        r = requests.get(_URL.format(cnpj), timeout=_TIMEOUT, headers=_HEADERS)
+        if r.status_code == 404:
+            return {"razao_social": "", "optante_simples": None, "nao_encontrado": True}
+        if r.status_code == 200:
+            d = r.json()
+            return {
+                "razao_social":    str(d.get("razao_social") or "").strip(),
+                "optante_simples": d.get("opcao_pelo_simples"),  # True / False / None
+                "nao_encontrado":  False,
+            }
+    except Exception:
+        pass
+    return {"razao_social": "", "optante_simples": None, "nao_encontrado": False}
 
-    with ThreadPoolExecutor(max_workers=len(fontes)) as pool:
-        futuros = {pool.submit(fn, cnpj_limpo): fn.__name__ for fn in fontes}
-        for futuro in as_completed(futuros):
-            try:
-                resultado = futuro.result()
-                if resultado is None:
-                    continue
-                simples = resultado.get("optante_simples")
-                if simples is not None:
-                    # Resultado completo — retorna imediatamente
-                    for f in futuros:
-                        f.cancel()
-                    return resultado
-                if melhor is None and resultado.get("razao_social"):
-                    melhor = resultado
-            except Exception:
-                pass
 
-    return melhor  # None ou dict sem optante_simples
-
+# ── Função pública ────────────────────────────────────────────────────────────
 
 def obter_dados_empresa(cnpj_limpo: str) -> dict:
     """
-    Consulta nome e status Simples Nacional com retry automático.
+    Retorna dados de CNPJ e status Simples Nacional.
 
-    Retorna dict com chaves:
+    Fluxo:
+      1. Cache em memória (TTL 1 h) → retorno instantâneo
+      2. BrasilAPI → retorna em ~1 s para a maioria das empresas
+         opcao_pelo_simples: True = optante, False = não optante, None = sem info
+
+    Retorna dict com:
       razao_social     str
       optante_simples  True | False | None
       nao_encontrado   bool
     """
-    # 1. Tenta o cache
+    # 1. Cache em memória
     cached = _cache_get(cnpj_limpo)
     if cached is not None:
         print(f"  CNPJ {cnpj_limpo}: cache hit — Simples={cached['optante_simples']}")
         return cached
 
-    melhor_parcial: dict | None = None  # resultado sem optante_simples
+    # 2. BrasilAPI
+    dados = _consultar_brasilapi(cnpj_limpo)
 
-    for tentativa in range(1, _MAX_TENTATIVAS + 1):
-        resultado = _uma_rodada(cnpj_limpo)
-
-        if resultado is None:
-            # Nenhuma fonte respondeu
-            if tentativa < _MAX_TENTATIVAS:
-                print(f"  CNPJ {cnpj_limpo}: todas as fontes falharam, retry {tentativa}/{_MAX_TENTATIVAS}…")
-                time.sleep(_DELAY_RETRY)
-                continue
-            break
-
-        simples = resultado.get("optante_simples")
-
-        if simples is not None:
-            # Sucesso
-            dados = {**resultado, "nao_encontrado": False}
-            _cache_set(cnpj_limpo, dados)
-            print(f"  CNPJ {cnpj_limpo}: {resultado['razao_social']} — Simples={simples} (tentativa {tentativa})")
-            return dados
-
-        # Tem razão social mas sem info do Simples
-        if melhor_parcial is None:
-            melhor_parcial = resultado
-
-        if tentativa < _MAX_TENTATIVAS:
-            print(f"  CNPJ {cnpj_limpo}: simples indisponível na tentativa {tentativa}, aguardando retry…")
-            time.sleep(_DELAY_RETRY)
-
-    # Esgotou tentativas
-    if melhor_parcial is not None:
-        dados = {**melhor_parcial, "nao_encontrado": False}
-        print(f"  CNPJ {cnpj_limpo}: {melhor_parcial['razao_social']} — Simples=indisponível após {_MAX_TENTATIVAS} tentativas")
+    if dados.get("nao_encontrado"):
+        print(f"  CNPJ {cnpj_limpo}: não encontrado na BrasilAPI.")
         return dados
 
-    print(f"  CNPJ {cnpj_limpo}: não encontrado em nenhuma fonte.")
-    return {"razao_social": "", "optante_simples": None, "nao_encontrado": True}
+    simples = dados.get("optante_simples")
+    razao   = dados.get("razao_social") or ""
+
+    if simples is not None:
+        _cache_set(cnpj_limpo, dados)
+        print(f"  CNPJ {cnpj_limpo}: {razao} — Simples={simples}")
+    else:
+        print(f"  CNPJ {cnpj_limpo}: {razao} — Simples=indisponível na BrasilAPI")
+
+    return dados
 
 
 def verificar_simples_nacional(cnpj_limpo: str) -> bool | None:
