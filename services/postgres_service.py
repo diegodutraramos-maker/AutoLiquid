@@ -80,18 +80,36 @@ def _upsert_servidor(cur, contexto: dict[str, str]) -> int:
     return int(row["id"])
 
 
+_SIMPLES_CACHE_DIAS = 30  # Re-verifica após este número de dias
+
+
+def _garantir_coluna_optante_simples(cur) -> None:
+    """Adiciona colunas de Simples Nacional à tabela processos se não existirem."""
+    cur.execute(
+        "alter table processos add column if not exists optante_simples boolean"
+    )
+    cur.execute(
+        "alter table processos add column if not exists simples_consultado_em timestamptz"
+    )
+
+
 def _upsert_processo(cur, snapshot: dict[str, Any]) -> int:
     documento = snapshot.get("documento", {}) or {}
     numero_processo = str(documento.get("processo") or snapshot.get("id") or "").strip()
     if not numero_processo:
         raise RuntimeError("Nao foi possivel identificar o numero do processo para persistencia.")
 
+    _garantir_coluna_optante_simples(cur)
+
+    optante = snapshot.get("optante_simples")
+    optante_val = bool(optante) if optante is not None else None
+
     cur.execute(
         """
         insert into processos (
-          numero_processo, cnpj, fornecedor, contrato, natureza, tipo_liquidacao
+          numero_processo, cnpj, fornecedor, contrato, natureza, tipo_liquidacao, optante_simples
         )
-        values (%s, %s, %s, %s, %s, %s)
+        values (%s, %s, %s, %s, %s, %s, %s)
         on conflict (numero_processo)
         do update set
           cnpj = excluded.cnpj,
@@ -99,6 +117,7 @@ def _upsert_processo(cur, snapshot: dict[str, Any]) -> int:
           contrato = excluded.contrato,
           natureza = excluded.natureza,
           tipo_liquidacao = excluded.tipo_liquidacao,
+          optante_simples = coalesce(excluded.optante_simples, processos.optante_simples),
           atualizado_em = now()
         returning id
         """,
@@ -109,10 +128,93 @@ def _upsert_processo(cur, snapshot: dict[str, Any]) -> int:
             str(documento.get("contrato") or "").strip() or None,
             str(documento.get("natureza") or "").strip() or None,
             str(documento.get("tipoLiquidacao") or "").strip() or None,
+            optante_val,
         ),
     )
     row = cur.fetchone()
     return int(row["id"])
+
+
+def consultar_simples_por_cnpj(cnpj_limpo: str) -> dict | None:
+    """
+    Consulta o status Simples Nacional de um CNPJ no histórico de processos.
+
+    Retorna dict com 'razao_social', 'optante_simples' e 'cache_expirado'
+    se o CNPJ estiver no banco, ou None se não estiver.
+
+    cache_expirado = True quando o status existe mas foi consultado há mais
+    de _SIMPLES_CACHE_DIAS dias — sinal para re-verificar nas APIs externas.
+    """
+    if not postgres_habilitado():
+        return None
+
+    try:
+        with _get_connection() as conn:
+            with conn.cursor() as cur:
+                _garantir_coluna_optante_simples(cur)
+                cur.execute(
+                    """
+                    select fornecedor, optante_simples, simples_consultado_em
+                    from processos
+                    where regexp_replace(cnpj, '[^0-9]', '', 'g') = %s
+                    order by
+                      (optante_simples is not null) desc,
+                      (simples_consultado_em is not null) desc,
+                      simples_consultado_em desc
+                    limit 1
+                    """,
+                    (cnpj_limpo,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+
+                consultado_em = row["simples_consultado_em"]
+                cache_expirado = True  # padrão: expirado se não soubermos quando foi
+                if consultado_em is not None:
+                    import datetime
+                    delta = datetime.datetime.now(tz=datetime.timezone.utc) - consultado_em.replace(
+                        tzinfo=datetime.timezone.utc
+                    ) if consultado_em.tzinfo is None else \
+                    datetime.datetime.now(tz=datetime.timezone.utc) - consultado_em
+                    cache_expirado = delta.days >= _SIMPLES_CACHE_DIAS
+
+                return {
+                    "razao_social":    str(row["fornecedor"] or ""),
+                    "optante_simples": row["optante_simples"],  # True / False / None
+                    "cache_expirado":  cache_expirado,
+                }
+    except Exception:
+        log.exception("Falha ao consultar simples por CNPJ no Supabase")
+        return None
+
+
+def salvar_simples_cnpj(cnpj_limpo: str, razao_social: str, optante: bool | None) -> None:
+    """
+    Persiste resultado de consulta Simples no histórico de processos.
+    Atualiza todos os processos existentes desse CNPJ com o novo status
+    e registra o timestamp da consulta para controle de TTL.
+    """
+    if not postgres_habilitado() or optante is None:
+        return
+
+    try:
+        with _get_connection() as conn:
+            with conn.cursor() as cur:
+                _garantir_coluna_optante_simples(cur)
+                cur.execute(
+                    """
+                    update processos
+                    set optante_simples        = %s,
+                        simples_consultado_em  = now(),
+                        fornecedor = coalesce(nullif(trim(%s), ''), fornecedor)
+                    where regexp_replace(cnpj, '[^0-9]', '', 'g') = %s
+                    """,
+                    (optante, razao_social or "", cnpj_limpo),
+                )
+            conn.commit()
+    except Exception:
+        log.exception("Falha ao salvar simples por CNPJ no Supabase")
 
 
 def _resolver_status_execucao(snapshot: dict[str, Any]) -> str:

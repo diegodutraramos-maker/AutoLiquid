@@ -46,6 +46,18 @@ from core.runtime_config import obter_datas_salvas, obter_porta_chrome, salvar_d
 
 log = logging.getLogger(__name__)
 
+# ── Injeta DATABASE_URL da config se não estiver no ambiente ──────────────────
+# Isso permite configurar o banco pela UI em desenvolvimento local,
+# sem precisar editar arquivos .env manualmente.
+try:
+    if not os.getenv("DATABASE_URL"):
+        from services.config_service import carregar_config_app as _carregar_cfg
+        _db_url = str((_carregar_cfg() or {}).get("database_url") or "").strip()
+        if _db_url:
+            os.environ["DATABASE_URL"] = _db_url
+except Exception:
+    pass
+
 DEFAULT_APP_VERSION = "1.0.14"
 
 
@@ -162,6 +174,7 @@ class WebConfigPayload(BaseModel):
     perguntarLimparMes: bool
     temaWeb: str = "light"
     nivelLog: str = "desenvolvedor"
+    databaseUrl: str = ""
 
 
 class ChromeOpenResponse(BaseModel):
@@ -1615,19 +1628,92 @@ def abrir_url(body: dict[str, Any]) -> dict[str, Any]:
 
 @app.post("/api/simples/consultar")
 def consultar_simples(body: dict[str, Any]) -> dict[str, Any]:
-    """Consulta nome + optante Simples Nacional via BrasilAPI."""
+    """
+    Consulta nome + optante Simples Nacional.
+
+    Ordem de prioridade:
+      1. Cache em memória (mesmo processo Python, TTL 1 h)
+      2. Supabase — histórico de processos anteriores (instantâneo)
+      3. APIs externas: BrasilAPI / cnpj.ws / receitaws (até 2 tentativas)
+    """
     import core.consulta_cnpj as _cnpj_mod
+
     cnpj_raw = str(body.get("cnpj", ""))
     cnpj_limpo = "".join(c for c in cnpj_raw if c.isdigit())
     if len(cnpj_limpo) != 14:
         raise HTTPException(status_code=422, detail="CNPJ deve ter 14 dígitos.")
+
+    # ── 1. Cache em memória ───────────────────────────────────────────────────
+    cached = _cnpj_mod._cache_get(cnpj_limpo)
+    if cached is not None:
+        print(f"  /simples: cache memória hit para {cnpj_limpo}")
+        return {
+            "cnpj": cnpj_limpo,
+            "razaoSocial": cached.get("razao_social") or "",
+            "optanteSimples": cached.get("optante_simples"),
+            "fonte": "cache",
+        }
+
+    # ── 2. Supabase — histórico de processos (com TTL de 30 dias) ────────────
+    ps = _postgres_service()
+    db_resultado = None
+    if ps.postgres_habilitado():
+        try:
+            db_resultado = ps.consultar_simples_por_cnpj(cnpj_limpo)
+        except Exception:
+            pass
+
+    if (
+        db_resultado is not None
+        and db_resultado.get("optante_simples") is not None
+        and not db_resultado.get("cache_expirado", True)
+    ):
+        razao = db_resultado.get("razao_social") or ""
+        optante = db_resultado["optante_simples"]
+        print(f"  /simples: Supabase hit {cnpj_limpo} → Simples={optante} (cache válido)")
+        _cnpj_mod._cache_set(cnpj_limpo, {"razao_social": razao, "optante_simples": optante})
+        return {
+            "cnpj": cnpj_limpo,
+            "razaoSocial": razao,
+            "optanteSimples": optante,
+            "fonte": "historico",
+        }
+
+    # ── 3. APIs externas (cache expirado ou CNPJ novo) ────────────────────────
     dados = _cnpj_mod.obter_dados_empresa(cnpj_limpo)
-    if dados.get("nao_encontrado"):
+
+    # Se as APIs falharam mas temos razão social no DB, retorna o que temos
+    if dados.get("nao_encontrado") and db_resultado is None:
         raise HTTPException(status_code=404, detail="CNPJ não encontrado na base da Receita Federal.")
+
+    optante = dados.get("optante_simples")
+    razao   = dados.get("razao_social") or (db_resultado or {}).get("razao_social") or ""
+
+    # Se as APIs não retornaram optante mas o DB tem um valor (mesmo expirado),
+    # usa o valor antigo como fallback e avisa que está desatualizado
+    if optante is None and db_resultado is not None and db_resultado.get("optante_simples") is not None:
+        optante = db_resultado["optante_simples"]
+        if not razao:
+            razao = db_resultado.get("razao_social") or ""
+        return {
+            "cnpj": cnpj_limpo,
+            "razaoSocial": razao,
+            "optanteSimples": optante,
+            "fonte": "historico_expirado",  # aviso: dado antigo, re-verificar
+        }
+
+    # Persiste no Supabase para próximas consultas
+    if optante is not None and ps.postgres_habilitado():
+        try:
+            ps.salvar_simples_cnpj(cnpj_limpo, razao, optante)
+        except Exception:
+            pass
+
     return {
         "cnpj": cnpj_limpo,
-        "razaoSocial": dados.get("razao_social") or "",
-        "optanteSimples": dados.get("optante_simples"),  # True / False / None
+        "razaoSocial": razao,
+        "optanteSimples": optante,
+        "fonte": "api",
     }
 
 

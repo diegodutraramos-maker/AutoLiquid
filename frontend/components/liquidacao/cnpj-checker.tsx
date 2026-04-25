@@ -18,6 +18,7 @@ function mascaraCnpj(v: string) {
 interface SimplesResult {
   razaoSocial: string;
   optanteSimples: boolean | null;
+  fonte?: string; // "cache" | "historico" | "historico_expirado" | "api"
 }
 
 type Estado =
@@ -89,12 +90,22 @@ export function CnpjChecker() {
     }
   };
 
-  const simplesLabel = (data: SimplesResult) =>
-    data.optanteSimples === true
-      ? { text: "Simples Nacional",       cls: "bg-emerald-500/10 text-emerald-700 ring-emerald-500/20" }
-      : data.optanteSimples === false
-      ? { text: "Não optante",            cls: "bg-secondary/60 text-muted-foreground ring-glass-border" }
-      : null; // null = sem badge (enquanto aguarda auto-retry)
+  const simplesLabel = (data: SimplesResult) => {
+    const expirado = data.fonte === "historico_expirado";
+    if (data.optanteSimples === true)
+      return {
+        text: expirado ? "Simples Nacional *" : "Simples Nacional",
+        cls: "bg-emerald-500/10 text-emerald-700 ring-emerald-500/20",
+        expirado,
+      };
+    if (data.optanteSimples === false)
+      return {
+        text: expirado ? "Não optante *" : "Não optante",
+        cls: "bg-secondary/60 text-muted-foreground ring-glass-border",
+        expirado,
+      };
+    return null;
+  };
 
   const carregando = estado.tipo === "loading";
 
@@ -152,7 +163,10 @@ export function CnpjChecker() {
             (() => {
               const lbl = simplesLabel(estado.data);
               return lbl ? (
-                <span className={`shrink-0 rounded-full px-2.5 py-0.5 text-[11px] font-semibold ring-1 ring-inset ${lbl.cls}`}>
+                <span
+                  title={lbl.expirado ? "Dado com mais de 30 dias — re-verificar" : undefined}
+                  className={`shrink-0 rounded-full px-2.5 py-0.5 text-[11px] font-semibold ring-1 ring-inset ${lbl.cls} ${lbl.expirado ? "opacity-70" : ""}`}
+                >
                   {lbl.text}
                 </span>
               ) : null;
@@ -179,6 +193,21 @@ export function CnpjChecker() {
               className="underline underline-offset-2 hover:text-foreground transition-colors"
             >
               Tentar novamente
+            </button>
+          </p>
+        )}
+
+      {/* Aviso de dado expirado (>30 dias) */}
+      {estado.tipo === "resultado" &&
+        estado.data.fonte === "historico_expirado" && (
+          <p className="mt-1.5 text-[11px] text-amber-600/80">
+            * Dado com mais de 30 dias — APIs externas indisponíveis no momento.{" "}
+            <button
+              type="button"
+              onClick={() => void consultar()}
+              className="underline underline-offset-2 hover:text-amber-700 transition-colors"
+            >
+              Atualizar
             </button>
           </p>
         )}

@@ -19,8 +19,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
 
 _TIMEOUT = 5          # segundos por chamada HTTP
-_MAX_TENTATIVAS = 3   # tentativas quando simples=None
-_DELAY_RETRY = 1.5    # segundos entre tentativas
+_MAX_TENTATIVAS = 2   # tentativas quando simples=None (1 extra se falhar)
+_DELAY_RETRY = 1.0    # segundos entre tentativas
 
 _HEADERS = {
     "User-Agent": "Mozilla/5.0 (compatible; AutoLiquid/1.0)",
@@ -59,10 +59,7 @@ def _brasilapi(cnpj: str) -> dict | None:
         if r.status_code == 200:
             d = r.json()
             simples = d.get("opcao_pelo_simples")
-            # BrasilAPI devolve True/False/None — normaliza None→False só quando
-            # a empresa está "ativa" (campo situacao_cadastral == "ATIVA")
-            if simples is None and str(d.get("situacao_cadastral") or "").upper() == "ATIVA":
-                simples = False  # ativa mas sem adesão = não optante
+            # opcao_pelo_simples: True = optante, False = não optante, None = sem info
             return {
                 "razao_social": str(d.get("razao_social") or "").strip(),
                 "optante_simples": simples,

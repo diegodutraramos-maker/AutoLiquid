@@ -20,6 +20,7 @@ CONFIG_APP_PADRAO = {
     "perguntar_limpar_mes": True,
     "tema_web": "light",
     "nivel_log": "desenvolvedor",
+    "database_url": "",
 }
 
 

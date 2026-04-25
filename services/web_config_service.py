@@ -557,10 +557,13 @@ def carregar_configuracoes_web() -> dict[str, Any]:
         "temaWeb": tema_web,
         "nivelLog": nivel_log,
         "navegador": navegador,
+        "databaseUrl": str(config.get("database_url") or ""),
     }
 
 
 def salvar_configuracoes_web(dados: dict[str, Any]) -> dict[str, Any]:
+    import os
+
     tema_web = _sanitize_text(dados.get("temaWeb") or "light").lower()
     if tema_web not in WEB_THEME_VALUES:
         tema_web = "light"
@@ -580,6 +583,8 @@ def salvar_configuracoes_web(dados: dict[str, Any]) -> dict[str, Any]:
     if navegador not in WEB_NAVEGADOR_VALUES:
         navegador = "chrome"
 
+    database_url = str(dados.get("databaseUrl") or "").strip()
+
     salvar_config_app(
         {
             "chrome_porta": chrome_porta,
@@ -587,6 +592,14 @@ def salvar_configuracoes_web(dados: dict[str, Any]) -> dict[str, Any]:
             "perguntar_limpar_mes": bool(dados.get("perguntarLimparMes", True)),
             "tema_web": tema_web,
             "nivel_log": nivel_log,
+            "database_url": database_url,
         }
     )
+
+    # Aplica imediatamente no ambiente para não precisar reiniciar
+    if database_url:
+        os.environ["DATABASE_URL"] = database_url
+    elif "DATABASE_URL" in os.environ and not database_url:
+        os.environ.pop("DATABASE_URL", None)
+
     return carregar_configuracoes_web()
