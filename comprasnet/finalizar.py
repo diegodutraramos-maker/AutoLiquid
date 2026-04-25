@@ -3,7 +3,7 @@ comprasnet_finalizar.py
 Clica no botão 'Apropriar SIAFI'.
 """
 import time
-from comprasnet_base import conectar
+from comprasnet.base import conectar
 
 def executar():
     p, pagina = conectar()

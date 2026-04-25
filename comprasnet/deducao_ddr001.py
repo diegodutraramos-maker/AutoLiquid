@@ -8,8 +8,8 @@ com import tardio (lazy) para evitar importação circular.
 """
 import re
 import logging
-from comprasnet_base import normalizar_valor
-from datas_impostos import calcular_datas
+from comprasnet.base import normalizar_valor
+from core.datas_impostos import calcular_datas
 
 log = logging.getLogger(__name__)
 
@@ -44,7 +44,7 @@ def executar_ddr001(
     bool  True se todas as deduções foram concluídas sem erro crítico.
     """
     # Import tardio — evita circular com comprasnet_deducao
-    from comprasnet_deducao import (
+    from comprasnet.deducao import (
         _verificar_interrupcao,
         _normalizar_data,
         _formatar_valor_br,

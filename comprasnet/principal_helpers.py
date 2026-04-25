@@ -1,20 +1,31 @@
 """
-comprasnet_principal_orcamento.py
-Preenche a aba Principal Com Orçamento.
-Situações implementadas: DSP001, DSP101, DSP102, BPV001, 201, 101, 102, 001 (legado).
+comprasnet_principal_helpers.py
+Utilitários compartilhados entre os handlers de situação do Principal Com Orçamento.
 """
-import re, time, logging
-from comprasnet_base import (conectar, achar_elemento,
-                              extrair_codigo_situacao, extrair_siafi_completo,
-                              config_situacao, _PREFERENCIA_SITUACAO,
-                              clicar_aba_generica, aguardar_aba_ativa)
+import re
+import time
+import logging
+
 from services.config_service import carregar_tabelas_config
 
 log = logging.getLogger(__name__)
 
+# ─────────────────────────────────────────────────────────────────────────────
+# EXCEÇÃO DE CONTROLE
+# ─────────────────────────────────────────────────────────────────────────────
 
 class ExecucaoInterrompida(Exception):
     """Interrupção cooperativa da etapa atual."""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# VPD — tabela de fallback embutida
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Formato de cada linha: [natureza, situação_dsp, código_vpd]
+_VPD_PADRAO: list[list[str]] = [
+    ["339030.01", "DSP 001", "3.3.2.3.X.04.00"],
+]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -34,42 +45,47 @@ def _situacao_vpd_compativel(situacao_linha: str, situacao_alvo: str) -> bool:
         return False
     if linha == alvo or alvo in linha or linha in alvo:
         return True
-
     codigos_linha = set(re.findall(r"[A-Z]{2,4}\d{3}", linha))
     codigos_alvo = set(re.findall(r"[A-Z]{2,4}\d{3}", alvo))
     if codigos_linha and codigos_alvo:
         return bool(codigos_linha & codigos_alvo)
-
     return False
 
 
 def _buscar_vpd(natureza: str, situacao: str = "") -> str:
     """
-    Retorna o código VPD (Conta Variação Patrimonial Diminutiva) para a natureza dada.
-    Lê primeiro de tabelas_config.json (sobreposições do usuário), depois usa o padrão
-    embutido em interface_estilos._VPD_PADRAO.
-
-    Parâmetros de busca:
-        natureza – código no formato "NNNNNN.XX" (ex: "339092.39") ou "NNNNNN" (ex: "339092")
+    Retorna o código VPD para a natureza dada.
+    Ordem de consulta: PostgreSQL → tabelas_config.json → _VPD_PADRAO embutido.
     Retorna '' se não encontrado.
     """
     nat = str(natureza).strip()
 
-    # Carrega tabela do JSON de configuração (prevalece sobre o padrão)
-    vpd_lista = []
+    vpd_lista: list = []
     try:
-        cfg = carregar_tabelas_config()
-        vpd_lista = cfg.get("vpd_lista", [])
+        from services.postgres_service import obter_tabela_operacional, postgres_habilitado
+        if postgres_habilitado():
+            rows = obter_tabela_operacional("vpd")
+            if rows is not None:
+                vpd_lista = [
+                    [
+                        str((row or {}).get("natureza", "")).strip(),
+                        str((row or {}).get("situacaoDsp", "")).strip(),
+                        str((row or {}).get("vpd", "")).strip(),
+                    ]
+                    for row in rows
+                ]
     except Exception as e:
-        log.warning("VPD: falha ao ler tabelas_config.json: %s", e)
+        log.warning("VPD: falha ao ler tabela remota no PostgreSQL: %s", e)
 
-    # Fallback: usa o padrão embutido se a lista estiver vazia
     if not vpd_lista:
         try:
-            from interface_estilos import _VPD_PADRAO
-            vpd_lista = _VPD_PADRAO
-        except ImportError:
-            pass
+            cfg = carregar_tabelas_config()
+            vpd_lista = cfg.get("vpd_lista", [])
+        except Exception as e:
+            log.warning("VPD: falha ao ler tabelas_config.json: %s", e)
+
+    if not vpd_lista:
+        vpd_lista = _VPD_PADRAO
 
     # Busca exata por natureza priorizando a situação correspondente
     for row in vpd_lista:
@@ -90,8 +106,9 @@ def _buscar_vpd(natureza: str, situacao: str = "") -> str:
         if row_nat.upper() == nat.upper():
             return row_vpd
 
-    # Busca sem sub-elemento: "339092" encontra "339092.XX", priorizando situação
     nat_base = nat.split(".")[0]
+
+    # Busca sem sub-elemento priorizando situação
     for row in vpd_lista:
         if len(row) < 3:
             continue
@@ -112,7 +129,18 @@ def _buscar_vpd(natureza: str, situacao: str = "") -> str:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# UTILITÁRIO: expander barra do empenho (compartilhado entre handlers)
+# CONTROLE DE INTERRUPÇÃO
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _verificar_interrupcao(deve_parar=None):
+    if deve_parar and deve_parar():
+        raise ExecucaoInterrompida(
+            "Execução interrompida pelo usuário durante Principal com Orçamento."
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# EXPANDIR BARRA DO EMPENHO
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _empenho_expandido(pagina, num_empenho: str) -> bool:
@@ -142,10 +170,7 @@ def _empenho_expandido(pagina, num_empenho: str) -> bool:
 
 
 def _expandir_barra_empenho(pagina, num_empenho_pdf: str, erros: list) -> bool:
-    """
-    Localiza e clica na barra azul do empenho para expandi-la.
-    Retorna True se bem-sucedido.
-    """
+    """Localiza e clica na barra azul do empenho para expandi-la."""
     num_fmt = re.sub(r"^(\d{4})(\d{6})$", r"\1NE\2", num_empenho_pdf)
     candidatos_numero = [num_fmt]
     numero_bruto = str(num_empenho_pdf or "").strip()
@@ -375,6 +400,10 @@ def _verificar_empenho(pagina, num_empenho_pdf: str, erros: list):
         print("    Aviso: não foi possível verificar o campo do empenho.")
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# PREENCHIMENTO DE CAMPOS COMPARTILHADOS
+# ─────────────────────────────────────────────────────────────────────────────
+
 def _preencher_contas_a_pagar(pagina, codigo: str, erros: list, desc: str = ""):
     """Preenche o campo 'Contas a Pagar' com o código informado."""
     def _normalizar_codigo(valor: str) -> str:
@@ -387,9 +416,7 @@ def _preencher_contas_a_pagar(pagina, codigo: str, erros: list, desc: str = ""):
             return False
         if atual == esperado:
             return True
-        equivalencias = {
-            "1104": {"213110400"},
-        }
+        equivalencias = {"1104": {"213110400"}}
         return atual in equivalencias.get(esperado, set())
 
     try:
@@ -454,12 +481,17 @@ def _preencher_contas_a_pagar(pagina, codigo: str, erros: list, desc: str = ""):
         erros.append(f"Erro ao preencher Contas a Pagar: {e}")
 
 
-def _preencher_campo_com_retry(pagina, locator, valor: str, erros: list,
-                               descricao: str = "campo", tentativas: int = 2,
-                               delay_entre: float = 1.0):
+def _preencher_campo_com_retry(
+    pagina,
+    locator,
+    valor: str,
+    erros: list,
+    descricao: str = "campo",
+    tentativas: int = 2,
+    delay_entre: float = 1.0,
+):
     """
     Preenche um campo e verifica se o valor ficou depois do Tab.
-    Se o campo reverter (JS reset), tenta novamente até `tentativas` vezes.
     Comum em campos de código SIAFI que disparam onBlur para buscar dados.
     """
     for t in range(1, tentativas + 1):
@@ -470,7 +502,6 @@ def _preencher_campo_com_retry(pagina, locator, valor: str, erros: list,
             pagina.keyboard.press("Tab")
             time.sleep(delay_entre)
             val_atual = locator.input_value().strip()
-            # Considera sucesso se o campo não está vazio ou se contém o valor digitado
             if val_atual:
                 print(f"    {descricao} → '{val_atual}' (tentativa {t})")
                 return val_atual
@@ -484,12 +515,9 @@ def _preencher_campo_com_retry(pagina, locator, valor: str, erros: list,
 def _preencher_vpd(pagina, vpd_codigo: str, erros: list):
     """Preenche 'Conta Variação Patrimonial Diminutiva' com o código VPD.
 
-    Se o campo VPD não existir na página (ex: tipo DH DSP 101), ignora
-    silenciosamente — o campo é opcional dependendo do tipo de empenho.
+    Se o campo não existir (ex: tipo DH DSP 101), ignora silenciosamente.
     """
     if not vpd_codigo:
-        # Sem código VPD mapeado — verifica se o campo sequer existe antes de
-        # reportar como erro; alguns tipos DH (DSP 101) não têm o campo.
         try:
             loc_check = pagina.locator(
                 "xpath=//*[contains(normalize-space(text()),'Variação Patrimonial')]"
@@ -504,11 +532,13 @@ def _preencher_vpd(pagina, vpd_codigo: str, erros: list):
         else:
             print("    VPD: campo não presente na página (tipo DH sem VPD) — ignorado.")
         return
+
     if "De acordo" in vpd_codigo:
         erros.append(
             f"VPD '{vpd_codigo}' requer conferência manual (código variável ou 'De acordo c/ NF')."
         )
         return
+
     try:
         vpd_normalizado = re.sub(r"(?i)x", "1", str(vpd_codigo or ""))
         vpd_partes = [parte.strip() for parte in vpd_normalizado.split(".") if parte.strip()]
@@ -522,7 +552,6 @@ def _preencher_vpd(pagina, vpd_codigo: str, erros: list):
             vpd_editavel = re.sub(r"\D+", "", vpd_normalizado)
             vpd_digitos = vpd_editavel
 
-        # Verifica rapidamente se o campo existe antes de tentar preencher.
         locator_vpd = pagina.locator(
             "xpath=//*[contains(normalize-space(text()),'Variação Patrimonial')]"
             "/following::input[1]"
@@ -530,7 +559,7 @@ def _preencher_vpd(pagina, vpd_codigo: str, erros: list):
         try:
             locator_vpd.wait_for(state="visible", timeout=3000)
         except Exception:
-            print(f"    VPD: campo não encontrado na página (tipo DH sem VPD) — código '{vpd_codigo}' ignorado.")
+            print(f"    VPD: campo não encontrado na página — código '{vpd_codigo}' ignorado.")
             return
 
         campo = locator_vpd
@@ -577,459 +606,3 @@ def _preencher_vpd(pagina, vpd_codigo: str, erros: list):
         print(f"    VPD preenchida: '{val}' (complemento: '{vpd_digitos or vpd_editavel or vpd_normalizado}')")
     except Exception as e:
         erros.append(f"Erro ao preencher VPD ({vpd_codigo}): {e}")
-
-
-def _verificar_interrupcao(deve_parar=None):
-    if deve_parar and deve_parar():
-        raise ExecucaoInterrompida("Execução interrompida pelo usuário durante Principal com Orçamento.")
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# HANDLERS POR SITUAÇÃO
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _preencher_situacao_DSP001(pagina, num_empenho_pdf, cfg, erros, dados_extraidos=None, deve_parar=None):
-    """
-    Situação DSP001 — Aquisição de Serviços Pessoas Jurídicas (com contrato).
-
-    Fluxo após seleção da situação:
-        1. Preenche Tem Contrato? (SIM/NÃO)
-        2. Se SIM: Conta de Contrato = "02" + Favorecido do Contrato = IG
-        3. Expande barra do empenho
-        4. Preenche VPD (lookup por natureza)
-        5. Preenche Contas a Pagar = "1104" → 2.1.3.1.1.04.00
-    """
-    print("    [DSP001] Preenchendo campos de contrato...")
-    _verificar_interrupcao(deve_parar)
-    dados = dados_extraidos or {}
-
-    tem_contrato = dados.get("Tem Contrato?", dados.get("Tem Contrato", "Não"))
-    ig_code      = dados.get("IG", "").strip()
-    natureza     = dados.get("Natureza", "").strip()
-
-    # 1. Tem Contrato?
-    try:
-        sel_tc = pagina.locator(
-            "xpath=//*[normalize-space(text())='Tem Contrato?']"
-            "/following::select[1]"
-        ).first
-        opcao_tc = "SIM" if tem_contrato == "Sim" else "NÃO"
-        sel_tc.select_option(label=opcao_tc)
-        time.sleep(1.2)   # aguarda campos de contrato aparecerem
-        print(f"    Tem Contrato? → {opcao_tc}")
-    except Exception as e:
-        erros.append(f"Erro ao preencher 'Tem Contrato?' (DSP001): {e}")
-
-    # 2. Conta de Contrato e Favorecido do Contrato (só se SIM)
-    if tem_contrato == "Sim":
-        _verificar_interrupcao(deve_parar)
-        # 2a. Conta de Contrato → "02"
-        # Usa retry porque o SIAFI às vezes redefine o campo ao fazer onBlur.
-        conta_contrato = cfg.get("conta_contrato", "02")
-        try:
-            campo_cc = pagina.locator(
-                "xpath=//*[normalize-space(text())='Conta de Contrato']"
-                "/following::input[1]"
-            ).first
-            _preencher_campo_com_retry(
-                pagina, campo_cc, conta_contrato, erros,
-                descricao="Conta de Contrato",
-                tentativas=3,
-                delay_entre=1.2,
-            )
-        except Exception as e:
-            erros.append(f"Erro ao localizar 'Conta de Contrato' (DSP001): {e}")
-
-        # 2b. Favorecido do Contrato → IG code (com retry pelo mesmo motivo)
-        if ig_code:
-            try:
-                campo_fav = pagina.locator(
-                    "xpath=//*[normalize-space(text())='Favorecido do Contrato']"
-                    "/following::input[1]"
-                ).first
-                _preencher_campo_com_retry(
-                    pagina, campo_fav, ig_code, erros,
-                    descricao="Favorecido do Contrato",
-                    tentativas=3,
-                    delay_entre=1.0,
-                )
-            except Exception as e:
-                erros.append(f"Erro ao localizar 'Favorecido do Contrato' (DSP001): {e}")
-        else:
-            erros.append("IG não disponível — preencha 'Favorecido do Contrato' manualmente.")
-
-    # 3. Expande barra do empenho
-    if not _expandir_barra_empenho(pagina, num_empenho_pdf, erros):
-        return
-    _verificar_interrupcao(deve_parar)
-    _verificar_empenho(pagina, num_empenho_pdf, erros)
-
-    # 4. VPD — busca pelo código da natureza
-    vpd = _buscar_vpd(natureza, "DSP001")
-    if vpd:
-        print(f"    VPD para natureza '{natureza}': {vpd}")
-    else:
-        print(f"    VPD não encontrado para natureza '{natureza}' — preencher manualmente.")
-    _preencher_vpd(pagina, vpd, erros)
-    _verificar_interrupcao(deve_parar)
-
-    # 5. Contas a Pagar → "1104"
-    _preencher_contas_a_pagar(pagina, cfg["contas_a_pagar"], erros)
-
-
-def _preencher_conta_estoque(pagina, codigo: str, erros: list):
-    """Preenche o campo 'Conta de Estoque' com o código informado (ex: '60100' → 1.1.5.6.1.01.00)."""
-    try:
-        campo = pagina.locator(
-            "xpath=//*[normalize-space(text())='Conta de Estoque']"
-            "/following::input[1]"
-        ).first
-        campo.click(click_count=3)
-        campo.fill("")
-        campo.press_sequentially(codigo, delay=80)
-        pagina.keyboard.press("Tab")
-        time.sleep(0.8)
-        val = campo.input_value().strip()
-        print(f"    Conta de Estoque: '{val}' (digitado: '{codigo}')")
-    except Exception as e:
-        erros.append(f"Erro ao preencher Conta de Estoque ({codigo}): {e}")
-
-
-def _preencher_situacao_DSP101_102(pagina, num_empenho_pdf, cfg, erros, dados_extraidos=None, deve_parar=None):
-    """
-    Situação DSP101 / DSP102 — Material de Consumo (Almoxarifado / Entrega Direta).
-
-    Fluxo após seleção da situação:
-        1. Expande barra do empenho
-        2. Preenche VPD (lookup por natureza)
-        3. Preenche Conta de Estoque = "60100" → 1.1.5.6.1.01.00
-        4. Preenche Contas a Pagar  = "1104"  → 2.1.3.1.1.04.00
-    """
-    cod = "DSP101/102"
-    print(f"    [{cod}] Expandindo barra do empenho...")
-    dados = dados_extraidos or {}
-    natureza = dados.get("Natureza", "").strip()
-
-    if not _expandir_barra_empenho(pagina, num_empenho_pdf, erros):
-        return
-    _verificar_interrupcao(deve_parar)
-    _verificar_empenho(pagina, num_empenho_pdf, erros)
-
-    # VPD
-    vpd = _buscar_vpd(natureza, "DSP101/102")
-    if vpd:
-        print(f"    VPD para natureza '{natureza}': {vpd}")
-    else:
-        print(f"    VPD não encontrado para natureza '{natureza}' — preencher manualmente.")
-    _preencher_vpd(pagina, vpd, erros)
-    _verificar_interrupcao(deve_parar)
-
-    # Conta de Estoque → "60100"
-    _preencher_conta_estoque(pagina, cfg.get("conta_estoque", "60100"), erros)
-
-    # Contas a Pagar → "1104"
-    _preencher_contas_a_pagar(pagina, cfg["contas_a_pagar"], erros)
-
-
-def _preencher_situacao_201(pagina, num_empenho_pdf, cfg, erros, dados_extraidos=None, deve_parar=None):
-    """Situação 201 — Material Permanente (Bens Móveis)."""
-    print("    [201] Expandindo barra do empenho...")
-    if not _expandir_barra_empenho(pagina, num_empenho_pdf, erros):
-        return
-    _verificar_interrupcao(deve_parar)
-    _verificar_empenho(pagina, num_empenho_pdf, erros)
-
-    # Conta de Bens Móveis — clica para disparar auto-preenchimento
-    try:
-        campo_cbm = pagina.locator(
-            "xpath=//*[contains(normalize-space(text()),'Conta de Bens')]"
-            "/following::input[1]"
-        ).first
-        campo_cbm.click()
-        time.sleep(0.5)
-        pagina.keyboard.press("Tab")
-        time.sleep(1.5)
-        val = campo_cbm.input_value().strip()
-        print(f"    Conta de Bens Móveis auto-preenchida: '{val}'")
-    except Exception as e:
-        erros.append(f"Erro ao acionar Conta de Bens Móveis (201): {e}")
-
-    _preencher_contas_a_pagar(pagina, cfg["contas_a_pagar"], erros)
-
-
-def _preencher_situacao_001_bpv(pagina, num_empenho_pdf, cfg, erros, dados_extraidos=None, deve_parar=None):
-    """Situação 001/BPV001 — Serviços de Terceiros (sem contrato)."""
-    print("    [BPV001/001] Expandindo barra do empenho...")
-    if not _expandir_barra_empenho(pagina, num_empenho_pdf, erros):
-        return
-    _verificar_interrupcao(deve_parar)
-    _verificar_empenho(pagina, num_empenho_pdf, erros)
-    _preencher_contas_a_pagar(pagina, cfg["contas_a_pagar"], erros)
-
-
-def _preencher_situacao_101_102(pagina, num_empenho_pdf, cfg, erros, dados_extraidos=None, deve_parar=None):
-    """Situação 101/102 — Material de Consumo."""
-    print("    [101/102] Expandindo barra do empenho...")
-    if not _expandir_barra_empenho(pagina, num_empenho_pdf, erros):
-        return
-    _verificar_interrupcao(deve_parar)
-    _verificar_empenho(pagina, num_empenho_pdf, erros)
-    _preencher_contas_a_pagar(pagina, cfg["contas_a_pagar"], erros)
-
-
-# Mapa: código SIAFI completo ou numérico → handler
-_HANDLERS = {
-    "DSP001": _preencher_situacao_DSP001,
-    "DSP101": _preencher_situacao_DSP101_102,
-    "DSP102": _preencher_situacao_DSP101_102,
-    "BPV001": _preencher_situacao_001_bpv,
-    "201":    _preencher_situacao_201,
-    "101":    _preencher_situacao_101_102,
-    "102":    _preencher_situacao_101_102,
-    "001":    _preencher_situacao_001_bpv,   # legado (quando não identificamos BPV/DSP)
-}
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# SELEÇÃO DE SITUAÇÃO NO DROPDOWN
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _selecionar_situacao_dropdown(pagina, cod_completo: str, cod_numerico: str) -> bool:
-    """
-    Seleciona a situação no dropdown da aba Principal Com Orçamento.
-    Tenta primeiro pela combinação letra+número (ex: 'DSP001'), depois pelo
-    código numérico puro (ex: '001') como fallback.
-    Retorna True se selecionou com sucesso.
-    """
-    sel = achar_elemento(pagina, "Situação:")
-
-    # Estratégia 1 — código SIAFI completo (ex: DSP001, BPV001)
-    if cod_completo:
-        valor = pagina.evaluate(
-            """([el, txt]) => {
-                const op = Array.from(el.options).find(
-                    o => o.text.toUpperCase().includes(txt.toUpperCase())
-                );
-                return op ? op.value : null;
-            }""",
-            [sel.element_handle(), cod_completo]
-        )
-        if valor:
-            sel.select_option(value=valor)
-            time.sleep(1.5)
-            print(f"    Situação selecionada: {cod_completo}")
-            return True
-
-    # Estratégia 2 — código numérico (fallback — pode pegar a primeira opção com esse número)
-    if cod_numerico:
-        preferido = _PREFERENCIA_SITUACAO.get(cod_numerico, cod_numerico)
-        for buscar in ([preferido, cod_numerico] if preferido != cod_numerico else [cod_numerico]):
-            valor = pagina.evaluate(
-                """([el, txt]) => {
-                    const op = Array.from(el.options).find(
-                        o => o.text.toUpperCase().includes(txt.toUpperCase())
-                    );
-                    return op ? op.value : null;
-                }""",
-                [sel.element_handle(), buscar]
-            )
-            if valor:
-                sel.select_option(value=valor)
-                time.sleep(1.5)
-                print(f"    Situação selecionada (fallback numérico): {buscar}")
-                return True
-
-    return False
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# ENTRADA PRINCIPAL
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _revalidar_favorecido_contrato(pagina, ig_code: str, erros: list) -> None:
-    ig_esperado = str(ig_code or "").strip()
-    if not ig_esperado:
-        return
-    try:
-        campo_fav = pagina.locator(
-            "xpath=//*[normalize-space(text())='Favorecido do Contrato']"
-            "/following::input[1]"
-        ).first
-        valor_atual = ""
-        try:
-            valor_atual = campo_fav.input_value().strip()
-        except Exception:
-            pass
-
-        if valor_atual == ig_esperado:
-            return
-
-        print(
-            f"    Favorecido do Contrato divergente antes da confirmação "
-            f"(atual: '{valor_atual or 'vazio'}', esperado: '{ig_esperado}'). Repreenchendo..."
-        )
-        _preencher_campo_com_retry(
-            pagina,
-            campo_fav,
-            ig_esperado,
-            erros,
-            descricao="Favorecido do Contrato",
-            tentativas=3,
-            delay_entre=1.0,
-        )
-    except Exception as e:
-        erros.append(f"Erro ao revalidar 'Favorecido do Contrato': {e}")
-
-
-def _abrir_aba_principal_orcamento(pagina, timeout_ms: int = 10000) -> None:
-    """Navega para a aba Principal Com Orçamento de forma resiliente."""
-    import time as _time
-
-    # Verifica se já está na aba certa (campo diagnóstico visível)
-    seletores_conteudo = [
-        "button[name='confirma-dados-pco']",
-        "#pco-situacao",
-        "select[name='pco-situacao']",
-        "[id*='situacao'][id*='pco'], [name*='situacao'][name*='pco']",
-    ]
-    if aguardar_aba_ativa(pagina, seletores_conteudo, timeout_ms=800):
-        return
-
-    # Textos candidatos para a aba (diferentes versões do portal)
-    textos = [
-        "Principal Com Orçamento",
-        "Principal com Orçamento",
-        "Principal Com Orcamento",
-        "Principal com Orcamento",
-        "Principal",
-    ]
-
-    # Tenta seletores CSS diretos primeiro
-    css_candidatos = [
-        "#principal-com-orcamento-tab",
-        "#pco-tab",
-        "a[href='#principal-com-orcamento']",
-        "a[href='#pco']",
-        "a[data-target='#principal-com-orcamento']",
-        "button[aria-controls='principal-com-orcamento']",
-        "a[aria-controls='pco']",
-    ]
-    clicou = pagina.evaluate(
-        """(candidatos) => {
-            const visivel = (el) => {
-                if (!el) return false;
-                const r = el.getBoundingClientRect();
-                const s = window.getComputedStyle(el);
-                return r.width > 0 && r.height > 0 && s.display !== 'none' && s.visibility !== 'hidden';
-            };
-            for (const sel of candidatos) {
-                try {
-                    const el = document.querySelector(sel);
-                    if (visivel(el)) { el.click(); return sel; }
-                } catch {}
-            }
-            return '';
-        }""",
-        css_candidatos,
-    )
-    if clicou and aguardar_aba_ativa(pagina, seletores_conteudo, timeout_ms=3000):
-        return
-
-    # Fallback: busca pelo texto
-    for texto in textos:
-        if clicar_aba_generica(pagina, texto, timeout_ms=3000):
-            _time.sleep(0.4)
-            if aguardar_aba_ativa(pagina, seletores_conteudo, timeout_ms=3000):
-                return
-
-    # Último recurso: espera mais tempo pelo texto original
-    try:
-        pagina.locator("text=Principal Com Orçamento").first.click(timeout=5000)
-        _time.sleep(0.8)
-        return
-    except Exception:
-        pass
-
-    raise RuntimeError(
-        "Aba Principal Com Orçamento não encontrada. "
-        "Verifique se o documento está aberto no portal Comprasnet."
-    )
-
-
-def executar(dados_extraidos, deve_parar=None, *, pagina=None, playwright=None):
-    sessao_propria = pagina is None
-    if sessao_propria:
-        playwright, pagina = conectar()
-
-    try:
-        print("=== PRINCIPAL COM ORÇAMENTO ===")
-        erros = []
-
-        _abrir_aba_principal_orcamento(pagina)
-        time.sleep(0.3)
-
-        for idx, emp in enumerate(dados_extraidos.get('Empenhos', [])):
-            _verificar_interrupcao(deve_parar)
-            num = emp.get('Empenho', '')
-            raw = emp.get('Situação', '')
-
-            # Extrai código completo (ex: 'DSP001') e numérico (ex: '001')
-            cod_completo = extrair_siafi_completo(raw)   # '' se não achar
-            cod_numerico = extrair_codigo_situacao(raw)  # '001', '201', etc.
-
-            # Chave de lookup: preferir completo, senão numérico
-            chave = cod_completo if cod_completo else cod_numerico
-            cfg   = config_situacao(chave)
-
-            print(f"\n  [{idx+1}] Empenho: {num} | raw: '{raw}' | completo: '{cod_completo}' | numérico: '{cod_numerico}'")
-
-            if cfg is None:
-                erros.append(
-                    f"Situação '{chave}' (raw: '{raw}') ainda não implementada. "
-                    "Preencha manualmente."
-                )
-                continue
-
-            # Seleciona situação no dropdown
-            ok = _selecionar_situacao_dropdown(pagina, cod_completo, cod_numerico)
-            if not ok:
-                erros.append(f"Empenho {num}: não foi possível selecionar situação '{chave}'.")
-                continue
-
-            # Chama handler — usa chave completa primeiro, numérica como fallback
-            handler = _HANDLERS.get(cod_completo) or _HANDLERS.get(cod_numerico)
-            if handler:
-                handler(
-                    pagina,
-                    num,
-                    cfg,
-                    erros,
-                    dados_extraidos=dados_extraidos,
-                    deve_parar=deve_parar,
-                )
-            else:
-                erros.append(f"Handler para situação '{chave}' não implementado.")
-
-        # Confirma aba
-        if not erros:
-            try:
-                _revalidar_favorecido_contrato(pagina, dados_extraidos.get("IG", ""), erros)
-                btn = pagina.locator("button[name='confirma-dados-pco']").first
-                btn.wait_for(state="visible", timeout=5000)
-                btn.click()
-                time.sleep(2.0)
-                print("\n  Confirmado.")
-            except Exception as e:
-                erros.append(f"Erro ao confirmar Principal Com Orçamento: {e}")
-
-        if erros:
-            return {"status": "alerta", "mensagem": "\n".join(erros)}
-        return {"status": "sucesso", "mensagem": "Principal Com Orçamento preenchido!"}
-
-    except ExecucaoInterrompida as e:
-        return {"status": "interrompido", "mensagem": str(e)}
-    except Exception as e:
-        return {"status": "erro", "mensagem": str(e)}
-    finally:
-        if sessao_propria and playwright is not None:
-            playwright.stop()

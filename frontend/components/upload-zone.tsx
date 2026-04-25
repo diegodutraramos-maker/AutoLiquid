@@ -6,7 +6,7 @@ import { GlassCard } from "./glass-card";
 import { cn } from "@/lib/utils";
 
 interface UploadZoneProps {
-  onFileSelect?: (file: File | null) => void;
+  onFileSelect?: (file: File | null, source: "drop" | "input" | "clear") => void;
   acceptedFormats?: string[];
   disabled?: boolean;
   disabledMessage?: string;
@@ -25,11 +25,11 @@ export function UploadZone({
   const [erroArquivo, setErroArquivo] = useState("");
   const inputRef = useRef<HTMLInputElement | null>(null);
 
-  const validarArquivo = (file: File | null) => {
+  const validarArquivo = (file: File | null, source: "drop" | "input") => {
     if (!file) {
       setSelectedFile(null);
       setErroArquivo("");
-      onFileSelect?.(null);
+      onFileSelect?.(null, "clear");
       return;
     }
 
@@ -38,13 +38,13 @@ export function UploadZone({
     if (!nomeValido && !tipoValido) {
       setSelectedFile(null);
       setErroArquivo("Selecione um arquivo PDF válido.");
-      onFileSelect?.(null);
+      onFileSelect?.(null, "clear");
       return;
     }
 
     setErroArquivo("");
     setSelectedFile(file);
-    onFileSelect?.(file);
+    onFileSelect?.(file, source);
   };
 
   const abrirSeletor = () => {
@@ -65,13 +65,17 @@ export function UploadZone({
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
+    e.stopPropagation();
     setIsDragging(false);
     if (disabled) return;
-    validarArquivo(e.dataTransfer.files[0] ?? null);
+    const arquivos = Array.from(e.dataTransfer.files ?? []);
+    const pdf = arquivos.find((file) => file.name.toLowerCase().endsWith(".pdf")) ?? arquivos[0] ?? null;
+    validarArquivo(pdf, "drop");
   };
 
   const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
-    validarArquivo(e.target.files?.[0] ?? null);
+    validarArquivo(e.target.files?.[0] ?? null, "input");
+    e.target.value = "";
   };
 
   const handleRemoveFile = (e: React.MouseEvent<HTMLButtonElement>) => {
@@ -81,7 +85,7 @@ export function UploadZone({
     if (inputRef.current) {
       inputRef.current.value = "";
     }
-    onFileSelect?.(null);
+    onFileSelect?.(null, "clear");
   };
 
   return (

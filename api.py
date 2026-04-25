@@ -35,31 +35,14 @@ try:
 except Exception:
     pass
 
+import re
 import requests
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from consulta_cnpj import verificar_simples_nacional
-from comprasnet_base import conectar as conectar_comprasnet
-from comprasnet_base import extrair_codigo_situacao, extrair_siafi_completo
 from core.app_paths import URL_INICIAL
-from core.runtime_config import obter_datas_salvas, obter_porta_chrome
-from datas_impostos import calcular_datas_documento, dias_uteis_ate
-from extrator import extrair_dados_pdf
-from services.chrome_service import abrir_chrome, chrome_esta_aberto
-from services.web_config_service import (
-    TABLE_DEFINITIONS,
-    carregar_configuracoes_web,
-    carregar_tabela_web,
-    salvar_configuracoes_web,
-    salvar_tabela_web,
-)
-from services.postgres_service import (
-    obter_dashboard,
-    persistir_documento_com_log,
-    postgres_habilitado,
-)
+from core.runtime_config import obter_datas_salvas, obter_porta_chrome, salvar_datas_processo
 
 log = logging.getLogger(__name__)
 
@@ -127,12 +110,50 @@ ETAPAS_BASE = [
 DOCUMENTOS_PROCESSADOS: dict[str, dict[str, Any]] = {}
 
 
+def _chrome_service():
+    from services import chrome_service
+    return chrome_service
+
+
+def _web_config_service():
+    from services import web_config_service
+    return web_config_service
+
+
+def _postgres_service():
+    from services import postgres_service
+    return postgres_service
+
+
+
+def _comprasnet_base():
+    import comprasnet.base as comprasnet_base
+    return comprasnet_base
+
+
+def _consulta_cnpj():
+    import core.consulta_cnpj as consulta_cnpj
+    return consulta_cnpj
+
+
+def _extrator():
+    import core.extrator as extrator
+    return extrator
+
+
+def _datas_impostos():
+    import core.datas_impostos as datas_impostos
+    return datas_impostos
+
+
 class ExecucaoInterrompida(Exception):
     """Sinaliza interrupção cooperativa de uma etapa em andamento."""
 
 
 class TableSaveRequest(BaseModel):
     rows: list[dict[str, Any]]
+
+
 
 
 class WebConfigPayload(BaseModel):
@@ -159,9 +180,15 @@ class ExecucaoPayload(BaseModel):
     contaBanco: str = ""
     contaAgencia: str = ""
     contaConta: str = ""
+    vpd: str = ""
     # Datas específicas por dedução (sobrepõem as datas globais do documento)
     dataApuracao: str = ""
     dataVencimento: str = ""
+
+
+class ProcessDatesPayload(BaseModel):
+    apuracao: str = ""
+    vencimento: str = ""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -225,6 +252,76 @@ def _s_campo(dados: dict, *chaves: str) -> str:
         except Exception:
             pass
     return ""
+
+
+def _valor_ou_traco(valor: Any) -> str:
+    texto = str(valor or "").strip()
+    if not texto or texto.lower() == "não encontrado":
+        return "—"
+    return texto
+
+
+def _normalizar_texto_legivel(valor: str) -> str:
+    return (
+        str(valor or "")
+        .replace("DeduÃ§Ã£o", "Dedução")
+        .replace("ExecuÃ§Ã£o", "Execução")
+        .replace("ConfirmaÃ§Ã£o", "Confirmação")
+        .replace("SituaÃ§Ã£o", "Situação")
+        .replace("nÃ£o", "não")
+        .replace("NÃ£o", "Não")
+        .replace("estÃ¡", "está")
+        .replace("CÃ³digo", "Código")
+        .replace("MunicÃ­pio", "Município")
+        .replace("Ã¡", "á")
+        .replace("Ã¢", "â")
+        .replace("Ã£", "ã")
+        .replace("Ã§", "ç")
+        .replace("Ã©", "é")
+        .replace("Ãª", "ê")
+        .replace("Ã­", "í")
+        .replace("Ã³", "ó")
+        .replace("Ã´", "ô")
+        .replace("Ãµ", "õ")
+        .replace("Ãº", "ú")
+        .replace("Âº", "º")
+        .replace("Âª", "ª")
+        .strip()
+    )
+
+
+def _detalhar_erro_execucao(nome: str, exc: Exception | str) -> str:
+    bruto = _normalizar_texto_legivel(str(exc or "")).strip()
+    normalizado = _normalizar_texto_status(bruto)
+
+    if not bruto:
+        return f"{nome}: erro sem detalhe retornado pela automação."
+
+    if "confirmar dados de pagamento" in normalizado and "nao encontrado" in normalizado:
+        return (
+            f"{nome}: o botão de confirmação final dos dados de pagamento não apareceu na tela. "
+            f"Detalhe: {bruto}"
+        )
+
+    if "timeout" in normalizado or "exceeded" in normalizado:
+        return (
+            f"{nome}: o portal demorou mais do que o esperado para responder. "
+            f"Detalhe: {bruto}"
+        )
+
+    if "nao encontrado" in normalizado or "não encontrado" in bruto.lower():
+        return (
+            f"{nome}: um campo, botão ou bloco esperado não foi localizado na página. "
+            f"Detalhe: {bruto}"
+        )
+
+    if "falha ao coletar documentos de origem" in normalizado:
+        return (
+            f"{nome}: os documentos de origem não puderam ser lidos corretamente no portal. "
+            f"Detalhe: {bruto}"
+        )
+
+    return f"{nome}: {bruto}"
 
 
 def _gerar_logs_simples_conferencia(dados: dict) -> list:
@@ -348,8 +445,8 @@ def _montar_pendencias_documento(
     if dados.get("requires_centro_custo") and not str(dados.get("ugr_numero", "") or "").strip():
         adicionar(
             "bloqueio",
-            "UGR obrigatória para seguir",
-            "O documento exige centro de custo, mas a UGR ainda não foi informada.",
+            "UGR não informada",
+            "Informe a UGR no painel abaixo para liberar o Centro de Custo.",
             "configuracao",
         )
 
@@ -362,6 +459,106 @@ def _montar_pendencias_documento(
             "Há dedução DOB001 no documento e o número da LF ainda não foi preenchido.",
             "configuracao",
         )
+
+    empenhos_raw = dados_extraidos.get("Empenhos", []) or []
+    if empenhos_raw:
+        situacao_empenho = str(empenhos_raw[0].get("Situação", "") or "")
+        try:
+            base = _comprasnet_base()
+            tipo_liquidacao = (
+                base.extrair_siafi_completo(situacao_empenho)
+                or base.extrair_codigo_situacao(situacao_empenho)
+                or ""
+            )
+        except Exception:
+            tipo_liquidacao = situacao_empenho
+        tipo_liquidacao_norm = _normalizar_texto_status(tipo_liquidacao).upper()
+        if tipo_liquidacao_norm in {"DSP201", "201"}:
+            # Calcular campos do IMB050 com os dados reais do documento
+            _natureza = str(dados_extraidos.get("Natureza", "") or "").strip()
+            _subitem = _natureza.split(".")[-1] if "." in _natureza else "??"
+            _bens_almox = "1.2.3.1.1.08.01"
+            try:
+                from services.config_service import carregar_tabelas_config as _ctc
+                _tabelas = _ctc()
+                _nat_bens = _tabelas.get("natureza_bens_moveis", {})
+                _NATUREZA_PADRAO_IMB = {
+                    "449052.04": "1.2.3.1.1.01.01", "449052.06": "1.2.3.1.1.01.02",
+                    "449052.08": "1.2.3.1.1.01.03", "449052.10": "1.2.3.1.1.01.04",
+                    "449052.12": "1.2.3.1.1.03.01", "449052.18": "1.2.3.1.1.04.02",
+                    "449052.20": "1.2.3.1.1.05.06", "449052.24": "1.2.3.1.1.01.05",
+                    "449052.28": "1.2.3.1.1.01.06", "449052.30": "1.2.3.1.1.01.07",
+                    "449052.32": "1.2.3.1.1.01.08", "449052.33": "1.2.3.1.1.04.05",
+                    "449052.34": "1.2.3.1.1.01.25", "449052.35": "1.2.3.1.1.02.01",
+                    "449052.36": "1.2.3.1.1.03.02", "449052.38": "1.2.3.1.1.01.09",
+                    "449052.39": "1.2.3.1.1.01.21", "449052.40": "1.2.3.1.1.01.20",
+                    "449052.41": "1.2.3.1.1.02.01", "449052.42": "1.2.3.1.1.03.03",
+                    "449052.44": "1.2.3.1.1.04.06", "449052.46": "1.2.3.1.1.01.10",
+                    "449052.48": "1.2.3.1.1.05.01", "449052.49": "1.2.3.1.1.01.11",
+                    "449052.51": "1.2.3.1.1.99.09", "449052.52": "1.2.3.1.1.05.03",
+                    "449052.54": "1.2.3.1.1.01.14", "449052.57": "1.2.3.1.1.01.12",
+                    "449052.60": "1.2.3.1.1.01.13", "449052.96": "1.2.3.1.1.07.03",
+                }
+                _nat_bens = _nat_bens or _NATUREZA_PADRAO_IMB
+                _bens_uso = _nat_bens.get(_natureza, "")
+            except Exception:
+                _bens_uso = ""
+            _bens_nao_mapeado = not _bens_uso
+            _bens_uso = _bens_uso or "Não mapeado — consulte Configurações → Tabelas"
+
+            try:
+                _total_nfs = sum(
+                    _brl_para_float(n.get("Valor", "0"))
+                    for n in dados_extraidos.get("Notas Fiscais", [])
+                )
+                _valor_str = f"R$ {_total_nfs:_.2f}".replace("_", ".").replace(".", ",", 1) if _total_nfs else "—"
+                # Formatação BRL correta
+                _valor_str = f"R$ {_total_nfs:,.2f}".replace(",", "X").replace(".", ",").replace("X", ".")
+            except Exception:
+                _valor_str = "—"
+
+            _aviso_nat = (
+                f" ⚠ Natureza '{_natureza}' não encontrada na tabela — verifique em Configurações → Tabelas."
+                if _bens_nao_mapeado else ""
+            )
+
+            adicionar(
+                "atencao",
+                "Lançar Outros Lançamentos no SIAFI (IMB050)",
+                f"Situação DSP201 — após a automação, acesse o SIAFI e lance manualmente: "
+                f"Outros Lançamentos → Situação IMB050. "
+                f"Campos: "
+                f"① Situação = IMB050 | "
+                f"② Subitem da Despesa = {_subitem} | "
+                f"③ Bens Móveis em Uso = {_bens_uso} | "
+                f"④ Bens Móveis em Almoxarifado = {_bens_almox} | "
+                f"⑤ Contas a Pagar = 2.1.3.1.1.04.00 (cód. 1104) | "
+                f"⑥ Valor = {_valor_str}."
+                + _aviso_nat,
+                "automacao",
+            )
+
+        # VPD ausente: verificar se situação DSP requer VPD e se não foi informado
+        _DSP_SITUACOES_VPD = {"DSP001", "DSP101", "DSP102", "DSP201"}
+        if tipo_liquidacao_norm in _DSP_SITUACOES_VPD:
+            vpd_manual = str(dados.get("vpd_manual", "") or "").strip()
+            if not vpd_manual:
+                natureza_vpd = str(dados_extraidos.get("Natureza", "") or "").strip()
+                vpd_tabela = ""
+                try:
+                    import comprasnet.principal_orcamento as _cpo
+                    vpd_tabela = _cpo._buscar_vpd(natureza_vpd, tipo_liquidacao_norm)
+                except Exception:
+                    pass
+                if not vpd_tabela:
+                    nat_label = f" para a natureza '{natureza_vpd}'" if natureza_vpd else ""
+                    adicionar(
+                        "atencao",
+                        "VPD não encontrado — informar manualmente",
+                        f"A situação {tipo_liquidacao_norm} requer VPD, mas nenhum foi localizado{nat_label}. "
+                        "Informe o código VPD no painel de preenchimento antes de executar.",
+                        "automacao",
+                    )
 
     for etapa in etapas:
         if str(etapa.get("status", "") or "") == "erro":
@@ -391,6 +588,26 @@ def _montar_pendencias_documento(
                 alerta_txt,
                 "pdf",
             )
+
+    # Consistência Simples Nacional × DDF025 (retenção federal: IR, CSLL, COFINS, PIS)
+    _optante = bool(dados.get("optante_simples", False))
+    _tem_ddf025 = any(str(d.get("siafi", "")).upper() == "DDF025" for d in deducoes)
+    if _optante and _tem_ddf025:
+        adicionar(
+            "divergencia",
+            "Optante pelo Simples com DDF025 identificada",
+            "A empresa consta como optante pelo Simples Nacional, mas a dedução DDF025 (retenção federal: IR, CSLL, COFINS, PIS) foi identificada no documento. "
+            "Empresas optantes pelo Simples geralmente são isentas dessas retenções federais — verifique se a retenção é devida.",
+            "pdf",
+        )
+    elif not _optante and not _tem_ddf025:
+        adicionar(
+            "atencao",
+            "Não optante sem DDF025",
+            "A empresa não consta como optante pelo Simples Nacional e nenhuma dedução DDF025 (retenção federal: IR, CSLL, COFINS, PIS) foi identificada. "
+            "Verifique se a retenção federal deveria estar presente neste documento.",
+            "pdf",
+        )
 
     mensagens = [*dados.get("logs", []), *dados.get("logs_simples", [])]
     for mensagem in mensagens:
@@ -464,6 +681,41 @@ def _montar_status_geral(
         "descricao": "Nenhum bloqueio ou divergência relevante foi identificado até aqui.",
     }
 
+def _vincular_iss_notas(deducoes: list[dict], notas: list[dict], tolerancia: float = 0.02) -> None:
+    """
+    Para cada dedução DDR001 ou DOB001 (ISS municipal), encontra as NFs cujos
+    valores somam exatamente à base de cálculo do ISS (subset sum).
+
+    Cada município pode ter seu próprio lançamento de ISS e sua base de cálculo
+    corresponde a um subconjunto das NFs liquidadas naquele município.
+    O resultado é gravado em `ded["notasFiscaisVinculadas"]` in-place.
+    """
+    from itertools import combinations
+
+    iss_entries = [d for d in deducoes if str(d.get("siafi", "")).upper() in {"DDR001", "DOB001"}]
+    if not iss_entries or not notas:
+        return
+
+    nf_pool = [(nf["id"], str(nf.get("nota", "")), float(nf.get("valor", 0))) for nf in notas if float(nf.get("valor", 0)) > 0]
+
+    for ded in iss_entries:
+        base = float(ded.get("baseCalculo", 0))
+        if base <= 0:
+            continue
+
+        vinculadas: list[dict] = []
+        # Testa subconjuntos do menor para o maior (primeiro match ganha)
+        for r in range(1, len(nf_pool) + 1):
+            for combo in combinations(nf_pool, r):
+                if abs(sum(v for _, _, v in combo) - base) <= tolerancia:
+                    vinculadas = [{"id": id_, "nota": nota, "valor": round(v, 2)} for id_, nota, v in combo]
+                    break
+            if vinculadas:
+                break
+
+        ded["notasFiscaisVinculadas"] = vinculadas
+
+
 def _montar_documento_processado(doc_id: str, dados: dict) -> dict[str, Any]:
     """Converte o estado interno de um documento para a resposta da API."""
     d = dados.get("dados_extraidos", {})
@@ -487,6 +739,9 @@ def _montar_documento_processado(doc_id: str, dados: dict) -> dict[str, Any]:
             "numero": e.get("Empenho", ""),
             "situacao": e.get("Situação", ""),
             "recurso": e.get("Recurso", ""),
+            "natureza": e.get("Natureza", "") or d.get("Natureza", ""),
+            "valor": _brl_para_float(e.get("Valor", "0") or "0"),
+            "saldo": _brl_para_float(e.get("Saldo", "0") or "0"),
         }
         for i, e in enumerate(d.get("Empenhos", []))
     ]
@@ -495,8 +750,7 @@ def _montar_documento_processado(doc_id: str, dados: dict) -> dict[str, Any]:
 
     # Calcula datas por código de imposto usando a lógica real da automação
     try:
-        from datas_impostos import calcular_datas_documento
-        _datas_calc = calcular_datas_documento(
+        _datas_calc = _datas_impostos().calcular_datas_documento(
             d,
             vencimento_usuario=str(dados.get("dates", {}).get("vencimento", "") or ""),
             apuracao_usuario=str(dados.get("dates", {}).get("apuracao", "") or ""),
@@ -521,16 +775,23 @@ def _montar_documento_processado(doc_id: str, dados: dict) -> dict[str, Any]:
                 "apuracao": _datas_calc.get(c, {}).get("apuracao", ""),
                 "vencimento": _datas_calc.get(c, {}).get("vencimento", ""),
             })(_normalizar_codigo(ded.get("Código", ""))),
+            "notasFiscaisVinculadas": [],
         }
         for i, ded in enumerate(d.get("Deduções", []))
     ]
+
+    # Para DDR001/DOB001 (ISS municipal), vincula cada lançamento às NFs
+    # correspondentes via subset sum: a base de cálculo = soma dos valores
+    # das NFs liquidadas naquele município.
+    _vincular_iss_notas(deducoes, notas)
 
     # Tipo de liquidação: derivado da situação do primeiro empenho
     tipo_liquidacao = ""
     empenhos_raw = d.get("Empenhos", [])
     if empenhos_raw:
         sit_raw = empenhos_raw[0].get("Situação", "")
-        tipo_liquidacao = extrair_siafi_completo(sit_raw) or extrair_codigo_situacao(sit_raw)
+        base = _comprasnet_base()
+        tipo_liquidacao = base.extrair_siafi_completo(sit_raw) or base.extrair_codigo_situacao(sit_raw)
 
     etapas = deepcopy(dados.get("etapas", ETAPAS_BASE))
     pendencias = _montar_pendencias_documento(dados, d, deducoes, etapas)
@@ -546,16 +807,18 @@ def _montar_documento_processado(doc_id: str, dados: dict) -> dict[str, Any]:
         "contaAgencia": dados.get("conta_agencia", ""),
         "contaConta": dados.get("conta_conta", ""),
         "requiresCentroCusto": bool(dados.get("requires_centro_custo", False)),
+        "vpd": dados.get("vpd_manual", ""),
         "dates": dados.get("dates", {"apuracao": "", "vencimento": ""}),
         "documento": {
-            "cnpj": d.get("CNPJ", ""),
-            "processo": d.get("Processo", ""),
-            "solPagamento": d.get("Solicitação de Pagamento", ""),
-            "convenio": d.get("Tem Convênio", ""),
-            "natureza": d.get("Natureza", ""),
-            "ateste": d.get("Data de Ateste", ""),
-            "contrato": d.get("Número do Contrato", ""),
-            "codigoIG": d.get("IG", ""),
+            "cnpj": _valor_ou_traco(d.get("CNPJ", "")),
+            "nomeCredor": _valor_ou_traco(d.get("Nome do Credor", "") or d.get("Nome Credor", "")),
+            "processo": _valor_ou_traco(d.get("Processo", "")),
+            "solPagamento": _valor_ou_traco(d.get("Solicitação de Pagamento", "")),
+            "convenio": _valor_ou_traco(d.get("Tem Convênio", "")),
+            "natureza": _valor_ou_traco(d.get("Natureza", "")),
+            "ateste": _valor_ou_traco(d.get("Data de Ateste", "")),
+            "contrato": _valor_ou_traco(d.get("Número do Contrato", "")),
+            "codigoIG": _valor_ou_traco(d.get("IG", "")),
             "tipoLiquidacao": tipo_liquidacao,
             "optanteSimples": bool(dados.get("optante_simples", False)),
             "alertas": dados.get("alertas", []),
@@ -583,7 +846,7 @@ def _montar_documento_processado(doc_id: str, dados: dict) -> dict[str, Any]:
 
 def _sincronizar_documento_postgres(doc_id: str, dados: dict) -> None:
     snapshot = _montar_documento_processado(doc_id, dados)
-    execucao_id = persistir_documento_com_log(snapshot)
+    execucao_id = _postgres_service().persistir_documento_com_log(snapshot)
     if execucao_id is not None:
         dados["postgres_execucao_id"] = execucao_id
 
@@ -595,12 +858,12 @@ def _executar_uma_etapa(
     pagina: Any,
 ) -> None:
     """Executa UMA etapa de automação, atualizando status e logs no dict doc."""
-    import comprasnet_apropriar
-    import comprasnet_dados_basicos
-    import comprasnet_principal_orcamento
-    import comprasnet_deducao
-    import comprasnet_dados_pagamento
-    import comprasnet_centro_custo
+    import comprasnet.apropriar as comprasnet_apropriar
+    import comprasnet.dados_basicos as comprasnet_dados_basicos
+    import comprasnet.principal_orcamento as comprasnet_principal_orcamento
+    import comprasnet.deducao as comprasnet_deducao
+    import comprasnet.dados_pagamento as comprasnet_dados_pagamento
+    import comprasnet.centro_custo as comprasnet_centro_custo
 
     dados = doc["dados_extraidos"]
     venc = str(doc.get("vencimento_documento") or doc["dates"].get("vencimento", "") or "")
@@ -621,11 +884,11 @@ def _executar_uma_etapa(
         status = resultado.get("status", "")
         mensagem = resultado.get("mensagem", "")
         if status == "erro":
-            raise RuntimeError(f"{nome}: {mensagem}")
+            raise RuntimeError(_detalhar_erro_execucao(nome, mensagem or "erro não detalhado"))
         if status == "interrompido":
             raise ExecucaoInterrompida(mensagem or f"{nome} interrompido.")
         if status == "alerta" and mensagem:
-            _log(doc, f"⚠ {nome}: {mensagem}")
+            _log(doc, f"⚠ {_detalhar_erro_execucao(nome, mensagem)}")
 
     _ETAPAS_NOMES = {
         0: "Apropriar Instrumento",
@@ -654,6 +917,10 @@ def _executar_uma_etapa(
             _verificar_resultado(resultado, "Dados Básicos")
         elif etapa_id == 2:
             _log(doc, "→ Iniciando Principal com Orçamento...")
+            # Injeta VPD informado manualmente pelo usuário nos dados extraídos
+            vpd_manual = str(doc.get("vpd_manual", "") or "").strip()
+            if vpd_manual:
+                dados["VPD_MANUAL"] = vpd_manual
             resultado = comprasnet_principal_orcamento.executar(
                 dados, deve_parar=deve_parar, pagina=pagina, playwright=playwright_obj
             )
@@ -693,8 +960,12 @@ def _executar_uma_etapa(
 
     except Exception as exc:
         _atualizar_etapa(doc, etapa_id, "erro")
-        _log(doc, f"✗ Etapa {etapa_id}: {exc}")
-        _log_s(doc, f"ERR {_ETAPAS_NOMES.get(etapa_id, f'Etapa {etapa_id}')}: {exc}")
+        mensagem = _detalhar_erro_execucao(
+            _ETAPAS_NOMES.get(etapa_id, f"Etapa {etapa_id}"),
+            exc,
+        )
+        _log(doc, f"✗ {mensagem}")
+        _log_s(doc, f"ERR {mensagem}")
         raise
 
 
@@ -709,27 +980,30 @@ def health() -> dict[str, str]:
 
 @app.get("/api/status")
 def status_backend() -> dict[str, Any]:
+    chrome_service = _chrome_service()
+    postgres_service = _postgres_service()
     porta = obter_porta_chrome()
-    aberto = chrome_esta_aberto(porta)
+    aberto = chrome_service.chrome_esta_aberto(porta)
     return {
         "chromeStatus": "pronto" if aberto else "erro",
         "chromePorta": porta,
-        "postgresEnabled": postgres_habilitado(),
+        "postgresEnabled": postgres_service.postgres_habilitado(),
     }
 
 
 @app.get("/api/dashboard")
 def dashboard(periodo: str = Query(default="semana")) -> dict[str, Any]:
-    return obter_dashboard(periodo)
+    return _postgres_service().obter_dashboard(periodo)
 
 
 @app.post("/api/chrome/abrir")
 def abrir_chrome_endpoint() -> dict[str, Any]:
+    chrome_service = _chrome_service()
     porta = obter_porta_chrome()
     try:
-        if not chrome_esta_aberto(porta):
-            abrir_chrome(porta, aguardar=True, timeout_s=15)
-        aberto = chrome_esta_aberto(porta)
+        if not chrome_service.chrome_esta_aberto(porta):
+            chrome_service.abrir_chrome(porta, aguardar=True, timeout_s=15)
+        aberto = chrome_service.chrome_esta_aberto(porta)
         return {
             "success": aberto,
             "chromeStatus": "pronto" if aberto else "erro",
@@ -755,26 +1029,34 @@ async def processar_pdf(
             conteudo = await file.read()
             tmp.write(conteudo)
 
-        dados_extraidos = extrair_dados_pdf(tmp_path, nome_arquivo=file.filename)
+        dados_extraidos = _extrator().extrair_dados_pdf(tmp_path, nome_arquivo=file.filename)
         if not dados_extraidos:
             raise HTTPException(
                 status_code=422,
                 detail="Não foi possível extrair dados do PDF. Verifique se é um documento LF válido.",
             )
 
-        from comprasnet_centro_custo import requer_centro_custo
+        from comprasnet.centro_custo import requer_centro_custo
 
         doc_id = str(uuid4())
         alertas: list[str] = []
         simples = False
 
-        # Verifica Simples Nacional
+        # Consulta BrasilAPI: Simples Nacional + razão social quando o PDF não trouxe o nome
         cnpj_limpo = "".join(c for c in str(dados_extraidos.get("CNPJ", "")) if c.isdigit())
         if cnpj_limpo:
             try:
-                simples = verificar_simples_nacional(cnpj_limpo)
+                empresa = _consulta_cnpj().obter_dados_empresa(cnpj_limpo)
+                optante = empresa.get("optante_simples")
+                simples = bool(optante) if optante is not None else False
                 if simples:
                     alertas.append("Empresa optante pelo Simples Nacional — verifique retenções.")
+                # Preenche nome do credor se o extrator não encontrou no PDF
+                nome_pdf = str(dados_extraidos.get("Nome do Credor", "") or "").strip()
+                if not nome_pdf:
+                    razao = empresa.get("razao_social", "")
+                    if razao:
+                        dados_extraidos["Nome do Credor"] = razao
             except Exception:
                 pass
 
@@ -802,7 +1084,10 @@ async def processar_pdf(
         raise
     except Exception as exc:
         log.exception("Erro ao processar PDF")
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=500,
+            detail=_detalhar_erro_execucao("Processamento do PDF", exc),
+        ) from exc
     finally:
         if tmp_path and os.path.exists(tmp_path):
             try:
@@ -834,6 +1119,7 @@ def salvar_preenchimento_documento(doc_id: str, payload: ExecucaoPayload) -> dic
     doc["conta_banco"] = payload.contaBanco
     doc["conta_agencia"] = payload.contaAgencia
     doc["conta_conta"] = payload.contaConta
+    doc["vpd_manual"] = payload.vpd
     _sincronizar_documento_postgres(doc_id, doc)
     return _montar_documento_processado(doc_id, doc)
 
@@ -856,13 +1142,14 @@ def executar_todas(doc_id: str, payload: ExecucaoPayload) -> dict[str, Any]:
     doc["conta_banco"] = payload.contaBanco
     doc["conta_agencia"] = payload.contaAgencia
     doc["conta_conta"] = payload.contaConta
+    doc["vpd_manual"] = payload.vpd
     doc["etapas"] = deepcopy(ETAPAS_BASE)
     doc["logs"] = []
     doc["logs_simples"] = _gerar_logs_simples_conferencia(doc["dados_extraidos"])
 
     playwright_obj = None
     try:
-        playwright_obj, pagina = conectar_comprasnet()
+        playwright_obj, pagina = _comprasnet_base().conectar()
         for etapa_id in range(0, 6):
             if doc.get("cancel_requested"):
                 raise ExecucaoInterrompida("Cancelado pelo usuário.")
@@ -870,7 +1157,7 @@ def executar_todas(doc_id: str, payload: ExecucaoPayload) -> dict[str, Any]:
     except ExecucaoInterrompida:
         _log(doc, "Execução interrompida pelo usuário.")
     except Exception as exc:
-        _log(doc, f"Erro inesperado: {exc}")
+        _log(doc, _detalhar_erro_execucao("Execução completa", exc))
         log.exception("Erro na execução de todas as etapas")
     finally:
         doc["is_running"] = False
@@ -909,13 +1196,15 @@ def executar_etapa(doc_id: str, etapa_id: int, payload: ExecucaoPayload) -> dict
         doc["conta_agencia"] = payload.contaAgencia
     if payload.contaConta:
         doc["conta_conta"] = payload.contaConta
+    if payload.vpd:
+        doc["vpd_manual"] = payload.vpd
 
     playwright_obj = None
     try:
-        playwright_obj, pagina = conectar_comprasnet()
+        playwright_obj, pagina = _comprasnet_base().conectar()
         _executar_uma_etapa(doc, etapa_id, playwright_obj, pagina)
     except Exception as exc:
-        _log(doc, f"Erro: {exc}")
+        _log(doc, _detalhar_erro_execucao(f"Etapa {etapa_id}", exc))
         log.exception("Erro na execução da etapa %s", etapa_id)
     finally:
         doc["is_running"] = False
@@ -954,7 +1243,7 @@ def executar_deducao_individual(doc_id: str, ded_id: int, payload: ExecucaoPaylo
 
     playwright_obj = None
     try:
-        import comprasnet_deducao
+        import comprasnet.deducao as comprasnet_deducao
 
         dados = doc["dados_extraidos"]
 
@@ -965,8 +1254,7 @@ def executar_deducao_individual(doc_id: str, ded_id: int, payload: ExecucaoPaylo
         else:
             # Recalcula as datas específicas para esta dedução
             try:
-                from datas_impostos import calcular_datas_documento
-                _datas_calc = calcular_datas_documento(
+                _datas_calc = _datas_impostos().calcular_datas_documento(
                     dados,
                     vencimento_usuario=str(doc["dates"].get("vencimento", "") or ""),
                     apuracao_usuario=str(doc["dates"].get("apuracao", "") or ""),
@@ -992,7 +1280,7 @@ def executar_deducao_individual(doc_id: str, ded_id: int, payload: ExecucaoPaylo
         doc["deducoes_status"][ded_id] = "executando"
         _log(doc, f"→ Executando dedução {ded_id}: {ded.get('Situação', '')} ({ded.get('Situação SIAFI', '')})")
 
-        playwright_obj, pagina = conectar_comprasnet()
+        playwright_obj, pagina = _comprasnet_base().conectar()
         resultado = comprasnet_deducao.executar(
             dados_fake, venc_deducao, apuracao, lf_numero,
             deve_parar=deve_parar, pagina=pagina, playwright=playwright_obj,
@@ -1004,7 +1292,10 @@ def executar_deducao_individual(doc_id: str, ded_id: int, payload: ExecucaoPaylo
 
         if status_res == "erro":
             doc["deducoes_status"][ded_id] = "erro"
-            _log(doc, f"✗ Dedução {ded_id}: {mensagem_res or 'erro desconhecido'}")
+            _log(
+                doc,
+                f"✗ {_detalhar_erro_execucao(f'Dedução {ded_id}', mensagem_res or 'erro desconhecido')}",
+            )
         elif status_res == "pulado":
             doc["deducoes_status"][ded_id] = "erro"
             _log(doc, f"✗ Dedução {ded_id}: tipo não reconhecido pelo classificador "
@@ -1016,7 +1307,10 @@ def executar_deducao_individual(doc_id: str, ded_id: int, payload: ExecucaoPaylo
         elif status_res == "alerta":
             # Concluído com avisos não-fatais (ex: outras deduções com erro parcial)
             doc["deducoes_status"][ded_id] = "concluido"
-            _log(doc, f"⚠ Dedução {ded_id} concluída com alertas: {mensagem_res}")
+            _log(
+                doc,
+                f"⚠ {_detalhar_erro_execucao(f'Dedução {ded_id}', mensagem_res)}",
+            )
             _log_s(doc, f"OK Dedução {ded_id} — {ded.get('Situação', '')} registrada (com alertas)")
         else:
             doc["deducoes_status"][ded_id] = "concluido"
@@ -1027,7 +1321,7 @@ def executar_deducao_individual(doc_id: str, ded_id: int, payload: ExecucaoPaylo
         if "deducoes_status" not in doc:
             doc["deducoes_status"] = {}
         doc["deducoes_status"][ded_id] = "erro"
-        _log(doc, f"Erro na dedução {ded_id}: {exc}")
+        _log(doc, _detalhar_erro_execucao(f"Dedução {ded_id}", exc))
         log.exception("Erro ao executar dedução individual %s", ded_id)
     finally:
         doc["is_running"] = False
@@ -1047,12 +1341,12 @@ def apropriar_siafi(doc_id: str) -> dict[str, Any]:
 
     logs: list[str] = []
     try:
-        import comprasnet_finalizar
+        import comprasnet.finalizar as comprasnet_finalizar
         comprasnet_finalizar.executar()
         logs.append("✓ Apropriação SIAFI concluída.")
         return {"success": True, "mensagem": "Apropriação SIAFI concluída com sucesso.", "logs": logs}
     except Exception as exc:
-        logs.append(f"✗ Erro: {exc}")
+        logs.append(f"✗ {_detalhar_erro_execucao('Apropriação SIAFI', exc)}")
         log.exception("Erro ao apropriar SIAFI")
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -1078,15 +1372,24 @@ def process_dates() -> dict[str, str]:
     }
 
 
+@app.put("/api/process-dates")
+def salvar_process_dates(payload: ProcessDatesPayload) -> dict[str, str]:
+    dados = salvar_datas_processo(payload.apuracao, payload.vencimento)
+    return {
+        "apuracao": str(dados.get("apuracao", "")),
+        "vencimento": str(dados.get("vencimento", "")),
+    }
+
+
 @app.get("/api/configuracoes")
 def configuracoes_web() -> dict[str, Any]:
-    return carregar_configuracoes_web()
+    return _web_config_service().carregar_configuracoes_web()
 
 
 @app.put("/api/configuracoes")
 def salvar_configuracoes(payload: WebConfigPayload) -> dict[str, Any]:
     try:
-        return salvar_configuracoes_web(payload.model_dump())
+        return _web_config_service().salvar_configuracoes_web(payload.model_dump())
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -1146,16 +1449,16 @@ def recarregar_modulos() -> dict[str, Any]:
 
 @app.get("/api/tabelas/{table_key}")
 def obter_tabela_web(table_key: str, search: str = Query(default="")) -> dict[str, Any]:
-    if table_key not in TABLE_DEFINITIONS:
+    if table_key not in _web_config_service().TABLE_DEFINITIONS:
         raise HTTPException(status_code=404, detail="Tabela não encontrada.")
-    return carregar_tabela_web(table_key, search)
+    return _web_config_service().carregar_tabela_web(table_key, search)
 
 
 @app.put("/api/tabelas/{table_key}")
 def atualizar_tabela_web(table_key: str, payload: TableSaveRequest) -> dict[str, Any]:
-    if table_key not in TABLE_DEFINITIONS:
+    if table_key not in _web_config_service().TABLE_DEFINITIONS:
         raise HTTPException(status_code=404, detail="Tabela não encontrada.")
-    return salvar_tabela_web(table_key, payload.rows)
+    return _web_config_service().salvar_tabela_web(table_key, payload.rows)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1206,6 +1509,96 @@ def verificar_atualizacao() -> dict[str, Any]:
         }
 
 
+@app.post("/api/debug/detectar-paginacao")
+def debug_detectar_paginacao() -> dict[str, Any]:
+    """
+    Conecta ao Chrome, navega para /gescon/fatura e inspeciona exaustivamente
+    todos os elementos de controle de paginação (selects, botões, DataTables).
+    Retorna um relatório JSON para diagnóstico.
+    """
+    playwright_obj, pagina = _comprasnet_base().conectar()
+    try:
+        # Não navega — inspeciona qualquer página que estiver aberta no momento
+        resultado = pagina.evaluate("""
+            () => {
+                var relatorio = {
+                    url: window.location.href,
+                    titulo: document.title,
+                    selects: [],
+                    botoes_todos: [],
+                    datatables_length: null,
+                    tabela_existe: false,
+                    linhas_tabela: 0
+                };
+
+                // 1. Varrer todos os <select> da página
+                var selects = document.querySelectorAll('select');
+                for (var i = 0; i < selects.length; i++) {
+                    var sel = selects[i];
+                    var rect = sel.getBoundingClientRect();
+                    var opts = [];
+                    for (var j = 0; j < sel.options.length; j++) {
+                        opts.push({ value: sel.options[j].value, text: sel.options[j].text.trim() });
+                    }
+                    relatorio.selects.push({
+                        index: i,
+                        name: sel.name || null,
+                        id: sel.id || null,
+                        className: sel.className || null,
+                        value_atual: sel.value,
+                        visivel: rect.width > 0 && rect.height > 0,
+                        options: opts,
+                        parent_classes: sel.parentElement ? sel.parentElement.className : null
+                    });
+                }
+
+                // 2. Botões/links/spans com texto "todos"
+                var todos_els = Array.from(document.querySelectorAll('button, a, li, span, option'));
+                for (var k = 0; k < todos_els.length; k++) {
+                    var el = todos_els[k];
+                    var txt = (el.textContent || '').trim();
+                    if (txt.toLowerCase() === 'todos' || txt.toLowerCase() === 'all') {
+                        var r = el.getBoundingClientRect();
+                        relatorio.botoes_todos.push({
+                            tag: el.tagName,
+                            text: txt,
+                            className: el.className || null,
+                            id: el.id || null,
+                            visivel: r.width > 0 && r.height > 0,
+                            value: el.value || null
+                        });
+                    }
+                }
+
+                // 3. Div DataTables length
+                var dtLen = document.querySelector('.dataTables_length');
+                if (dtLen) {
+                    relatorio.datatables_length = {
+                        html: dtLen.innerHTML.substring(0, 500),
+                        className: dtLen.className
+                    };
+                }
+
+                // 4. Tabela principal
+                var linhas = document.querySelectorAll('table tbody tr');
+                relatorio.tabela_existe = linhas.length > 0;
+                relatorio.linhas_tabela = linhas.length;
+
+                return relatorio;
+            }
+        """)
+
+        return {"ok": True, "relatorio": resultado}
+
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    finally:
+        try:
+            playwright_obj.stop()
+        except Exception:
+            pass
+
+
 @app.post("/api/abrir-url")
 def abrir_url(body: dict[str, Any]) -> dict[str, Any]:
     """Abre uma URL no navegador padrão do sistema."""
@@ -1214,6 +1607,248 @@ def abrir_url(body: dict[str, Any]) -> dict[str, Any]:
     if url:
         webbrowser.open(url)
     return {"ok": True}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CNPJ / SIMPLES NACIONAL
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.post("/api/simples/consultar")
+def consultar_simples(body: dict[str, Any]) -> dict[str, Any]:
+    """Consulta nome + optante Simples Nacional via BrasilAPI."""
+    import core.consulta_cnpj as _cnpj_mod
+    cnpj_raw = str(body.get("cnpj", ""))
+    cnpj_limpo = "".join(c for c in cnpj_raw if c.isdigit())
+    if len(cnpj_limpo) != 14:
+        raise HTTPException(status_code=422, detail="CNPJ deve ter 14 dígitos.")
+    dados = _cnpj_mod.obter_dados_empresa(cnpj_limpo)
+    if dados.get("nao_encontrado"):
+        raise HTTPException(status_code=404, detail="CNPJ não encontrado na base da Receita Federal.")
+    return {
+        "cnpj": cnpj_limpo,
+        "razaoSocial": dados.get("razao_social") or "",
+        "optanteSimples": dados.get("optante_simples"),  # True / False / None
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CONSULTA NF-e POR CHAVE DE ACESSO (44 dígitos)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ConsultaChavePayload(BaseModel):
+    chave: str
+
+
+@app.post("/api/nfe/consultar-chave")
+async def consultar_nfe_chave(payload: ConsultaChavePayload) -> dict[str, Any]:
+    """
+    Recebe uma chave de acesso de 44 dígitos, consulta a SEFAZ via
+    DistribuicaoDFe (requer certificado digital configurado) e retorna
+    os dados da NF-e parseados por nfelib ou ElementTree.
+    """
+    from core.consulta_nfe import consultar_chave_acesso, validar_chave
+
+    try:
+        chave = validar_chave(payload.chave)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+    # Lê configurações do certificado do arquivo de configurações da app
+    cfg = _web_config_service().carregar_configuracoes_web()
+    cert_path     = cfg.get("nfCertPath") or os.getenv("NF_CERT_PATH")
+    cert_senha    = cfg.get("nfCertSenha") or os.getenv("NF_CERT_SENHA")
+    cnpj_receptor = cfg.get("nfCnpj") or os.getenv("NF_CNPJ")
+
+    try:
+        dados = consultar_chave_acesso(
+            chave,
+            cert_path=cert_path,
+            cert_senha=cert_senha,
+            cnpj_receptor=cnpj_receptor,
+        )
+        return dados
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao consultar SEFAZ: {e}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ANÁLISE DE XML NF-e
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _parse_nfe_xml(conteudo: bytes) -> dict:
+    """
+    Tenta parsear com nfelib; cai para xml.etree.ElementTree se indisponível.
+    Retorna dict com: numero, serie, emitente, cnpjEmitente, dataEmissao,
+    valorBruto e deduções (irrf, pis, cofins, csll, inss, iss).
+    """
+    import xml.etree.ElementTree as ET
+
+    NS = "http://www.portalfiscal.inf.br/nfe"
+
+    def _f(v) -> float:
+        try:
+            return float(v or 0)
+        except Exception:
+            return 0.0
+
+    def _tag(el, path: str):
+        """Busca com e sem namespace."""
+        r = el.find(f".//{{{NS}}}{path}")
+        if r is None:
+            r = el.find(f".//{path}")
+        return r
+
+    def _txt(el, path: str) -> str:
+        t = _tag(el, path)
+        return (t.text or "").strip() if t is not None else ""
+
+    try:
+        root = ET.fromstring(conteudo)
+    except ET.ParseError as e:
+        raise ValueError(f"XML inválido: {e}")
+
+    # Encontra infNFe
+    inf = _tag(root, "infNFe")
+    if inf is None:
+        raise ValueError("Elemento <infNFe> não encontrado — verifique se é uma NF-e válida.")
+
+    numero   = _txt(inf, "nNF")
+    serie    = _txt(inf, "serie")
+    cnpj_em  = _txt(inf, "emit/CNPJ") or _txt(inf, "emit/CPF")
+    nome_em  = _txt(inf, "emit/xNome") or _txt(inf, "emit/xFant")
+    dt_emis  = _txt(inf, "ide/dhEmi") or _txt(inf, "ide/dEmi")
+
+    # Valor total
+    v_nf = _f(_txt(inf, "total/ICMSTot/vNF"))
+    if v_nf == 0:
+        # Tenta vProd como fallback
+        v_nf = _f(_txt(inf, "total/ICMSTot/vProd"))
+
+    # Retenções federais (retTrib)
+    v_irrf   = _f(_txt(inf, "total/retTrib/vIRRF"))
+    v_pis    = _f(_txt(inf, "total/retTrib/vRetPIS"))
+    v_cofins = _f(_txt(inf, "total/retTrib/vRetCOFINS"))
+    v_csll   = _f(_txt(inf, "total/retTrib/vRetCSLL"))
+    v_inss   = _f(_txt(inf, "total/retTrib/vRetPrev"))
+
+    # ISS (infNFe/total/ICMSTot/vISS ou infNFeSupl/qrCode…)
+    v_iss = (
+        _f(_txt(inf, "total/ICMSTot/vISS"))
+        or _f(_txt(inf, "total/ISSQNtot/vISSRet"))
+    )
+
+    return {
+        "numero":       numero,
+        "serie":        serie,
+        "emitente":     nome_em,
+        "cnpjEmitente": cnpj_em,
+        "dataEmissao":  dt_emis[:10] if dt_emis else "",
+        "valorBruto":   round(v_nf, 2),
+        "deducoes": {
+            "irrf":   round(v_irrf, 2),
+            "pis":    round(v_pis, 2),
+            "cofins": round(v_cofins, 2),
+            "csll":   round(v_csll, 2),
+            "inss":   round(v_inss, 2),
+            "iss":    round(v_iss, 2),
+        },
+    }
+
+
+@app.post("/api/xml/analisar")
+async def analisar_xmls(files: list[UploadFile] = File(...)) -> dict[str, Any]:
+    """
+    Recebe 1-N arquivos XML de NF-e, parseia cada um e retorna o somatório
+    de valor bruto e de cada dedução.
+    """
+    notas = []
+    erros = []
+
+    for arq in files:
+        conteudo = await arq.read()
+        try:
+            nota = _parse_nfe_xml(conteudo)
+            nota["arquivo"] = arq.filename or ""
+            notas.append(nota)
+        except Exception as e:
+            erros.append({"arquivo": arq.filename or "", "erro": str(e)})
+
+    # Somatórios
+    def _soma(campo: str) -> float:
+        return round(sum(n.get(campo, 0) for n in notas), 2)
+
+    def _soma_ded(codigo: str) -> float:
+        return round(sum(n.get("deducoes", {}).get(codigo, 0) for n in notas), 2)
+
+    totais = {
+        "valorBruto": _soma("valorBruto"),
+        "deducoes": {
+            "irrf":   _soma_ded("irrf"),
+            "pis":    _soma_ded("pis"),
+            "cofins": _soma_ded("cofins"),
+            "csll":   _soma_ded("csll"),
+            "inss":   _soma_ded("inss"),
+            "iss":    _soma_ded("iss"),
+        },
+    }
+
+    return {"notas": notas, "totais": totais, "erros": erros}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ANÁLISE DE PDF NF-e / NFS-e
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.post("/api/pdf/debug-texto")
+async def debug_texto_pdf(file: UploadFile = File(...)) -> dict[str, Any]:
+    """Retorna o texto bruto extraído pelo pdfplumber — usado para calibrar parser."""
+    import pdfplumber, io
+    conteudo = await file.read()
+    with pdfplumber.open(io.BytesIO(conteudo)) as pdf:
+        paginas = []
+        for i, page in enumerate(pdf.pages):
+            texto = page.extract_text() or ""
+            tabelas = page.extract_tables() or []
+            paginas.append({"pagina": i + 1, "texto": texto, "tabelas": tabelas})
+    return {"paginas": paginas}
+
+@app.post("/api/pdf/analisar-nf")
+async def analisar_pdf_nf(file: UploadFile = File(...)) -> dict[str, Any]:
+    """
+    Recebe um PDF de NF-e ou NFS-e e extrai via pdfplumber:
+    CNPJ, razão social, valor bruto, deduções (ISS, IRRF, PIS, COFINS, CSLL, INSS),
+    município de incidência e valor líquido.
+    Também consulta o Simples Nacional para o CNPJ extraído.
+    """
+    from core.parser_nf_pdf import extrair_dados_nf_pdf
+    import core.consulta_cnpj as _cnpj_mod
+
+    conteudo = await file.read()
+    if not conteudo:
+        raise HTTPException(status_code=422, detail="Arquivo PDF vazio.")
+
+    try:
+        dados = extrair_dados_nf_pdf(conteudo)
+    except ValueError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao processar PDF: {e}")
+
+    # Consulta Simples Nacional para o CNPJ extraído
+    simples: bool | None = None
+    cnpj_limpo = re.sub(r"[^0-9]", "", dados.get("cnpj", ""))
+    if len(cnpj_limpo) == 14:
+        try:
+            empresa = _cnpj_mod.obter_dados_empresa(cnpj_limpo)
+            simples = empresa.get("optante_simples")
+            if not dados.get("razaoSocial") and empresa.get("razao_social"):
+                dados["razaoSocial"] = empresa["razao_social"]
+        except Exception:
+            pass
+
+    return {**dados, "optanteSimples": simples}
 
 
 if __name__ == "__main__":

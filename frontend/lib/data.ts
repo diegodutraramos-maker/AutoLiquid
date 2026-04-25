@@ -2,8 +2,9 @@ const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000"
 const DEFAULT_API_TIMEOUT_MS = 10000
 const EXECUTION_API_TIMEOUT_MS = 5 * 60 * 1000
-const DEFAULT_API_STARTUP_TIMEOUT_MS = 30000
-const DEFAULT_API_STARTUP_RETRY_MS = 750
+const PDF_PROCESS_TIMEOUT_MS = 2 * 60 * 1000
+const DEFAULT_API_STARTUP_TIMEOUT_MS = 60000
+const DEFAULT_API_STARTUP_RETRY_MS = 1000
 
 export type ChromeStatus = "pronto" | "carregando" | "erro"
 
@@ -14,6 +15,7 @@ export interface ProcessDates {
 
 export interface Documento {
   cnpj: string
+  nomeCredor?: string
   processo: string
   solPagamento: string
   convenio: string
@@ -49,6 +51,15 @@ export interface Empenho {
   numero: string
   situacao: string
   recurso: string
+  natureza?: string
+  valor?: number
+  saldo?: number
+}
+
+export interface NotaFiscalVinculada {
+  id: number
+  nota: string
+  valor: number
 }
 
 export interface Deducao {
@@ -60,6 +71,7 @@ export interface Deducao {
   valor: number
   status: "aguardando" | "executando" | "concluido" | "erro"
   datasCalculadas?: { apuracao: string; vencimento: string }
+  notasFiscaisVinculadas?: NotaFiscalVinculada[]
 }
 
 export interface EtapaExecucao {
@@ -124,6 +136,11 @@ export interface DocumentoProcessado {
   lfNumero: string
   ugrNumero: string
   vencimentoDocumento: string
+  usarContaPdf?: boolean
+  contaBanco?: string
+  contaAgencia?: string
+  contaConta?: string
+  vpd?: string
   requiresCentroCusto: boolean
   dates: ProcessDates
   documento: Documento
@@ -324,6 +341,10 @@ export async function fetchBackendStatus(): Promise<BackendStatus> {
   return apiFetch<BackendStatus>("/api/status")
 }
 
+export async function fetchBackendHealth(): Promise<{ status: string }> {
+  return apiFetch<{ status: string }>("/api/health", undefined, { timeoutMs: 4000 })
+}
+
 export async function fetchDashboard(
   periodo: "dia" | "semana" | "mes" | "este-mes" = "semana"
 ): Promise<DashboardInfo> {
@@ -348,8 +369,8 @@ export async function waitForBackendReady(
 
   onProgress?.({
     phase: "starting-api",
-    title: "Iniciando API interna",
-    detail: "Preparando os serviços locais do AutoLiquid...",
+    title: "Abrindo o AutoLiquid",
+    detail: "Preparando os serviços locais para iniciar a automação.",
     progress: 18,
     attempt,
     elapsedMs: 0,
@@ -365,22 +386,20 @@ export async function waitForBackendReady(
 
     onProgress?.({
       phase: "starting-api",
-      title: "Conectando ao backend interno",
-      detail:
-        attempt === 1
-          ? "Abrindo a API local pela primeira vez..."
-          : `Tentativa ${attempt}: aguardando resposta em ${API_BASE_URL}.`,
+      title: "Conectando os serviços",
+      detail: "Aguardando os serviços locais ficarem prontos para liberar a tela inicial.",
       progress,
       attempt,
       elapsedMs,
     })
 
     try {
+      await fetchBackendHealth()
       const status = await fetchBackendStatus()
       onProgress?.({
         phase: "starting-api",
-        title: "API conectada",
-        detail: "Conexao com o backend interno estabelecida.",
+        title: "Serviços conectados",
+        detail: "Tudo certo. A interface principal já pode ser preparada.",
         progress: 86,
         attempt,
         elapsedMs: Date.now() - startedAt,
@@ -414,6 +433,18 @@ export async function openChromeSession(): Promise<OpenChromeResponse> {
 
 export async function fetchProcessDates(): Promise<ProcessDates> {
   return apiFetch<ProcessDates>("/api/process-dates")
+}
+
+export async function saveProcessDates(
+  dates: ProcessDates
+): Promise<ProcessDates> {
+  return apiFetch<ProcessDates>("/api/process-dates", {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(dates),
+  })
 }
 
 export async function fetchDocumentoProcessado(
@@ -481,6 +512,9 @@ export async function uploadPDF(
     {
       method: "POST",
       body: formData,
+    },
+    {
+      timeoutMs: PDF_PROCESS_TIMEOUT_MS,
     }
   )
 }
@@ -496,6 +530,7 @@ export async function executarTodas(
     contaBanco?: string
     contaAgencia?: string
     contaConta?: string
+    vpd?: string
   } = {}
 ): Promise<DocumentoProcessado> {
   return apiFetch<DocumentoProcessado>(
@@ -513,6 +548,7 @@ export async function executarTodas(
         contaBanco: options.contaBanco ?? "",
         contaAgencia: options.contaAgencia ?? "",
         contaConta: options.contaConta ?? "",
+        vpd: options.vpd ?? "",
       }),
     },
     {
@@ -534,6 +570,7 @@ export async function executarEtapa(
     contaBanco?: string
     contaAgencia?: string
     contaConta?: string
+    vpd?: string
   } = {}
 ): Promise<DocumentoProcessado> {
   return apiFetch<DocumentoProcessado>(
@@ -551,6 +588,7 @@ export async function executarEtapa(
         contaBanco: options.contaBanco ?? "",
         contaAgencia: options.contaAgencia ?? "",
         contaConta: options.contaConta ?? "",
+        vpd: options.vpd ?? "",
       }),
     },
     {
@@ -622,6 +660,7 @@ export async function salvarPreenchimentoDocumento(
     contaBanco?: string
     contaAgencia?: string
     contaConta?: string
+    vpd?: string
   } = {}
 ): Promise<DocumentoProcessado> {
   return apiFetch<DocumentoProcessado>(
@@ -637,6 +676,7 @@ export async function salvarPreenchimentoDocumento(
         contaBanco: options.contaBanco ?? "",
         contaAgencia: options.contaAgencia ?? "",
         contaConta: options.contaConta ?? "",
+        vpd: options.vpd ?? "",
       }),
     }
   )

@@ -2,10 +2,12 @@
 
 import { Suspense, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import { Header } from "@/components/header";
 import { DocumentoPanel } from "@/components/documento-panel";
 import { NotasFiscaisTable } from "@/components/notas-fiscais-table";
 import { FilaExecucao } from "@/components/fila-execucao";
+import { LogExecucaoPanel } from "@/components/log-execucao-panel";
 import { StatusOverview } from "@/components/status-overview";
 import { TabelasModal } from "@/components/tabelas-modal";
 import { ConfiguracoesModal } from "@/components/configuracoes-modal";
@@ -25,7 +27,6 @@ import {
   fetchAppSettings,
   openChromeSession,
   pararExecucao,
-  waitForBackendReady,
   type Documento,
   type Deducao,
   type DocumentoProcessado,
@@ -60,7 +61,6 @@ function ConferenciaPageContent() {
   const [dates, setDates] = useState<ProcessDates>(MOCK_PROCESS_DATES);
   const [logs, setLogs] = useState<string[]>([]);
   const [logsSimples, setLogsSimples] = useState<string[]>([]);
-  const [nivelLog, setNivelLog] = useState<"simples" | "desenvolvedor">("desenvolvedor");
   const [isTabelasOpen, setIsTabelasOpen] = useState(false);
   const [tabelasInitialTab, setTabelasInitialTab] = useState<TableKey>("contratos");
   const [tabelasVisibleTabs, setTabelasVisibleTabs] = useState<TableKey[] | undefined>(undefined);
@@ -88,17 +88,28 @@ function ConferenciaPageContent() {
   const [contaBanco, setContaBanco] = useState("");
   const [contaAgencia, setContaAgencia] = useState("");
   const [contaConta, setContaConta] = useState("");
+  const [vpd, setVpd] = useState("");
   const [datasDeducoes, setDatasDeducoes] = useState<Record<number, { apuracao: string; vencimento: string }>>({});
   const [tocouLf, setTocouLf] = useState(false);
   const [tocouUgr, setTocouUgr] = useState(false);
   const [tocouConta, setTocouConta] = useState(false);
   const [tocouFatura, setTocouFatura] = useState(false);
+  const [tocouVpd, setTocouVpd] = useState(false);
   const [salvandoPendencias, setSalvandoPendencias] = useState(false);
+  const [pendenciasExpanded, setPendenciasExpanded] = useState(true);
   const precisaLF = deducoes.some((deducao) => deducao.siafi === "DOB001");
   const precisaUGR = requiresCentroCusto;
+  const _temPendenciaVpd = pendencias.some(
+    (p) => p.titulo.toLowerCase().includes("vpd não encontrado")
+  );
+  // Campo VPD deve ser exibido enquanto há pendência OU enquanto o usuário
+  // estiver preenchendo (tocouVpd=true), mesmo que o valor já não esteja vazio.
+  const precisaVpd = _temPendenciaVpd && !vpd.trim();
+  const mostrarVpd = _temPendenciaVpd || tocouVpd;
   const temFatura = notasFiscais.some((nota) =>
     nota.tipo.toLowerCase().includes("fatura")
   );
+  const mostraBlocoLf = precisaLF || temFatura;
   const contaPdfDisponivel = Boolean(documento.bancoPdf || documento.agenciaPdf || documento.contaPdf);
   const contaManualCompleta = Boolean(
     contaBanco.trim() && contaAgencia.trim() && contaConta.trim()
@@ -126,6 +137,7 @@ function ConferenciaPageContent() {
     setLfNumero(payload.lfNumero ?? "");
     setUgrNumero(payload.ugrNumero ?? "");
     setVencimentoDocumento(payload.vencimentoDocumento ?? "");
+    setVpd(payload.vpd ?? "");
     setRequiresCentroCusto(Boolean(payload.requiresCentroCusto));
     setIsExecutando(Boolean(payload.isRunning));
     setParadaSolicitada(Boolean(payload.cancelRequested));
@@ -191,7 +203,6 @@ function ConferenciaPageContent() {
             }
 
             if (settingsResult.status === "fulfilled" && ativo) {
-              setNivelLog(settingsResult.value.nivelLog ?? "desenvolvedor");
               setBrowserName(settingsResult.value.navegador === "edge" ? "Edge" : "Chrome");
             }
           } finally {
@@ -211,21 +222,21 @@ function ConferenciaPageContent() {
         return;
       }
 
-      try {
-        const status = await waitForBackendReady();
+      const [statusResult, payloadResult, settingsResult] = await Promise.allSettled([
+        fetchBackendStatus(),
+        fetchDocumentoProcessado(documentoId),
+        fetchAppSettings(),
+      ]);
+
+      if (statusResult.status === "fulfilled") {
         if (!ativo) return;
-        setChromeStatus(status.chromeStatus);
-      } catch (error) {
-        console.error("Erro ao consultar status do Chrome:", error);
+        setChromeStatus(statusResult.value.chromeStatus);
+      } else {
+        console.error("Erro ao consultar status do Chrome:", statusResult.reason);
         if (ativo) {
           setChromeStatus("erro");
         }
       }
-
-      const [payloadResult, settingsResult] = await Promise.allSettled([
-        fetchDocumentoProcessado(documentoId),
-        fetchAppSettings(),
-      ]);
 
       if (payloadResult.status === "fulfilled") {
         if (!ativo) return;
@@ -244,7 +255,6 @@ function ConferenciaPageContent() {
       }
 
       if (settingsResult.status === "fulfilled" && ativo) {
-        setNivelLog(settingsResult.value.nivelLog ?? "desenvolvedor");
         setBrowserName(settingsResult.value.navegador === "edge" ? "Edge" : "Chrome");
       }
     };
@@ -290,6 +300,12 @@ function ConferenciaPageContent() {
   }, [documentoId]);
 
   useEffect(() => {
+    if (precisaUGR || precisaLF || precisaVpd || temFatura || !dadosBancariosResolvidos) {
+      setPendenciasExpanded(true);
+    }
+  }, [precisaUGR, precisaLF, precisaVpd, temFatura, dadosBancariosResolvidos]);
+
+  useEffect(() => {
     if (!documentoId || !isExecutando) return;
 
     let ativo = true;
@@ -321,6 +337,7 @@ function ConferenciaPageContent() {
     banco = contaBanco,
     agencia = contaAgencia,
     conta = contaConta,
+    vpdInformado = vpd,
   ) => {
     if (!documentoId) return;
     execucaoAbortControllerRef.current?.abort();
@@ -341,6 +358,7 @@ function ConferenciaPageContent() {
         contaBanco: banco,
         contaAgencia: agencia,
         contaConta: conta,
+        vpd: vpdInformado,
       });
       aplicarPayload(payload);
       setStatusMensagem(resumirExecucao(payload, "Execução concluída."));
@@ -373,6 +391,7 @@ function ConferenciaPageContent() {
     banco = contaBanco,
     agencia = contaAgencia,
     conta = contaConta,
+    vpdInformado = vpd,
   ) => {
     if (!documentoId) return;
     execucaoAbortControllerRef.current?.abort();
@@ -394,6 +413,7 @@ function ConferenciaPageContent() {
         contaBanco: banco,
         contaAgencia: agencia,
         contaConta: conta,
+        vpd: vpdInformado,
       });
       aplicarPayload(payload);
       setStatusMensagem(resumirExecucao(payload, `${etapa.nome} concluída.`));
@@ -553,11 +573,14 @@ function ConferenciaPageContent() {
         contaBanco,
         contaAgencia,
         contaConta,
+        vpd,
       });
-      aplicarPayload(payload);
+      setPendencias(payload.pendencias ?? []);
+      setPendenciasExpanded(false);
       setStatusMensagem("Preenchimento operacional salvo.");
     } catch (error) {
       console.error("Erro ao salvar preenchimento:", error);
+      setPendenciasExpanded(true);
       setErro(
         error instanceof Error
           ? error.message
@@ -618,20 +641,19 @@ function ConferenciaPageContent() {
       return false;
     }
 
+    if (titulo.includes("vpd não encontrado") && vpd.trim()) {
+      return false;
+    }
+
+    // Oculta pendência de UGR quando o campo já está preenchido
+    if (titulo.toLowerCase().includes("ugr não informada") && ugrNumero.trim()) {
+      return false;
+    }
+
     return true;
   });
 
   const pendenciasLocais: PendenciaDocumento[] = [];
-
-  if (precisaUGR && !ugrNumero.trim()) {
-    pendenciasLocais.push({
-      id: "local-ugr",
-      tipo: "bloqueio",
-      titulo: "UGR pendente",
-      descricao: "Informe a UGR para liberar a etapa de Centro de Custo.",
-      origem: "configuracao",
-    });
-  }
 
   if (precisaLF && !lfNumero.trim()) {
     pendenciasLocais.push({
@@ -737,7 +759,7 @@ function ConferenciaPageContent() {
         </div>
 
         {/* Main Grid Layout */}
-        <div className="grid items-start gap-6 min-[1180px]:grid-cols-[minmax(240px,300px)_minmax(0,1.7fr)_minmax(270px,330px)]">
+        <div className="grid items-start gap-6 min-[1180px]:grid-cols-[minmax(220px,250px)_minmax(0,1.85fr)_minmax(270px,320px)]">
           {/* Left Column - Documento */}
           <div className="space-y-6">
             <DocumentoPanel documento={documento} resumo={resumo} />
@@ -757,196 +779,227 @@ function ConferenciaPageContent() {
               }
               logs={logs}
               logsSimples={logsSimples}
-              nivelLog={nivelLog}
               pendencias={pendenciasVisiveis}
               pendenciasExtraContent={
-                <div className="rounded-2xl border border-glass-border/70 bg-background/55 p-4">
-                  <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                    <div>
-                      <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">
-                        Preenchimento Operacional
-                      </p>
-                      <p className="mt-1 text-sm text-muted-foreground">
-                        Resolva aqui as lacunas antes de executar. Se nada for selecionado, a execução avisa sem abrir pop-ups.
-                      </p>
+                <div className="rounded-2xl border border-glass-border/70 bg-background/55 px-5 py-4">
+                  {/* ── Header ── */}
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <p className="text-xs font-semibold uppercase tracking-[0.18em] text-primary">
+                      Preenchimento Operacional
+                    </p>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setPendenciasExpanded((current) => !current)}
+                        className="inline-flex h-9 w-9 items-center justify-center rounded-full border border-glass-border bg-background/75 text-muted-foreground transition-colors hover:text-foreground"
+                        aria-label={pendenciasExpanded ? "Recolher preenchimento operacional" : "Expandir preenchimento operacional"}
+                      >
+                        {pendenciasExpanded ? (
+                          <ChevronDown className="h-4 w-4" />
+                        ) : (
+                          <ChevronRight className="h-4 w-4" />
+                        )}
+                      </button>
+                      <GlassButton
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => void handleSalvarPreenchimento()}
+                        disabled={salvandoPendencias || isExecutando}
+                        className="shrink-0"
+                      >
+                        {salvandoPendencias ? "Salvando..." : "Salvar"}
+                      </GlassButton>
                     </div>
-                    <GlassButton
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => void handleSalvarPreenchimento()}
-                      disabled={salvandoPendencias || isExecutando}
-                      className="shrink-0"
-                    >
-                      {salvandoPendencias ? "Salvando..." : "Salvar"}
-                    </GlassButton>
                   </div>
 
-                  <div className="grid gap-4 lg:grid-cols-2">
-                    {(precisaLF || temFatura) && (
-                      <div className="space-y-3 rounded-2xl border border-glass-border/60 bg-secondary/20 p-4">
-                        <div>
-                          <p className="text-sm font-semibold text-foreground">LF e fatura</p>
-                          <p className="mt-1 text-xs text-muted-foreground">
-                            Use a LF do processo e, se houver fatura, informe também o vencimento específico.
-                          </p>
+                  {pendenciasExpanded ? (
+                    <div className="mt-5 divide-y divide-glass-border/40 [&>*]:pt-5 [&>*:first-child]:pt-0">
+
+                      {/* ── Grid de campos pequenos (LF, UGR, VPD) ── */}
+                      {(mostraBlocoLf || precisaUGR || mostrarVpd) && (
+                        <div className="grid gap-x-6 gap-y-5 lg:grid-cols-2">
+
+                          {mostraBlocoLf && (
+                            <div className="space-y-3">
+                              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">LF e Fatura</p>
+                              <div className="space-y-2">
+                                <label className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground/70">
+                                  LF
+                                </label>
+                                <Input
+                                  value={lfNumero}
+                                  maxLength={12}
+                                  placeholder="Ex.: 2026LF00123"
+                                  onFocus={() => setTocouLf(true)}
+                                  onChange={(event) => {
+                                    setTocouLf(true);
+                                    setLfNumero(event.target.value);
+                                  }}
+                                />
+                              </div>
+                              {temFatura && (
+                                <div className="space-y-2">
+                                  <label className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground/70">
+                                    Vencimento da fatura
+                                  </label>
+                                  <Input
+                                    value={vencimentoDocumento}
+                                    placeholder="dd/mm/aaaa"
+                                    onFocus={() => setTocouFatura(true)}
+                                    onChange={(event) => {
+                                      setTocouFatura(true);
+                                      setVencimentoDocumento(event.target.value);
+                                    }}
+                                  />
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          {precisaUGR && (
+                            <div className="space-y-3">
+                              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Centro de Custo</p>
+                              <div className="space-y-2">
+                                <label className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground/70">
+                                  UGR
+                                </label>
+                                <Input
+                                  value={ugrNumero}
+                                  maxLength={6}
+                                  placeholder="Ex.: 153424"
+                                  onFocus={() => setTocouUgr(true)}
+                                  onChange={(event) => {
+                                    setTocouUgr(true);
+                                    setUgrNumero(event.target.value);
+                                  }}
+                                />
+                              </div>
+                            </div>
+                          )}
+
+                          {mostrarVpd && (
+                            <div className="space-y-3">
+                              <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">VPD</p>
+                              <div className="space-y-2">
+                                <label className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground/70">
+                                  Conta VPD
+                                </label>
+                                <Input
+                                  value={vpd}
+                                  placeholder="Ex.: 311130200"
+                                  onFocus={() => setTocouVpd(true)}
+                                  onChange={(event) => {
+                                    setTocouVpd(true);
+                                    setVpd(event.target.value);
+                                  }}
+                                />
+
+                              </div>
+                            </div>
+                          )}
+
                         </div>
-                        <div className="space-y-2">
-                          <label className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
-                            LF
-                          </label>
-                          <Input
-                            value={lfNumero}
-                            maxLength={12}
-                            placeholder="Ex.: 2026LF00123"
-                            onFocus={() => setTocouLf(true)}
-                            onChange={(event) => {
-                              setTocouLf(true);
-                              setLfNumero(event.target.value);
-                            }}
-                          />
-                        </div>
-                        {temFatura && (
-                          <div className="space-y-2">
-                            <label className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
-                              Vencimento da fatura
-                            </label>
-                            <Input
-                              value={vencimentoDocumento}
-                              placeholder="dd/mm/aaaa"
-                              onFocus={() => setTocouFatura(true)}
-                              onChange={(event) => {
-                                setTocouFatura(true);
-                                setVencimentoDocumento(event.target.value);
+                      )}
+
+                      {/* ── Dados Bancários ── */}
+                      <div className="space-y-3">
+                        <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                          <p className="text-xs font-semibold uppercase tracking-[0.14em] text-muted-foreground">Dados Bancários</p>
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setTocouConta(true);
+                                setUsarContaPdf(true);
                               }}
-                            />
+                              className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
+                                usarContaPdf
+                                  ? "border-primary bg-primary/10 text-primary"
+                                  : "border-glass-border bg-background text-muted-foreground hover:bg-secondary/50"
+                              }`}
+                            >
+                              Conta do PDF
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setTocouConta(true);
+                                setUsarContaPdf(false);
+                                if (!contaBanco && documento.bancoPdf) setContaBanco(documento.bancoPdf);
+                                if (!contaAgencia && documento.agenciaPdf) setContaAgencia(documento.agenciaPdf);
+                                if (!contaConta && documento.contaPdf) setContaConta(documento.contaPdf);
+                              }}
+                              className={`rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
+                                !usarContaPdf
+                                  ? "border-primary bg-primary/10 text-primary"
+                                  : "border-glass-border bg-background text-muted-foreground hover:bg-secondary/50"
+                              }`}
+                            >
+                              Preencher manualmente
+                            </button>
+                          </div>
+                        </div>
+
+                        {usarContaPdf ? (
+                          <div className="rounded-xl border border-glass-border/50 bg-secondary/10 px-3 py-3 text-sm text-muted-foreground">
+                            {contaPdfDisponivel
+                              ? [documento.bancoPdf && `Banco ${documento.bancoPdf}`, documento.agenciaPdf && `Ag. ${documento.agenciaPdf}`, documento.contaPdf && `Conta ${documento.contaPdf}`].filter(Boolean).join(" · ")
+                              : "Nenhuma conta foi identificada no PDF. Troque para preenchimento manual."}
+                          </div>
+                        ) : (
+                          <div className="grid gap-3 md:grid-cols-3">
+                            <div className="space-y-2">
+                              <label className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground/70">
+                                Banco
+                              </label>
+                              <Input
+                                value={contaBanco}
+                                placeholder={documento.bancoPdf || "Ex.: 001"}
+                                onFocus={() => setTocouConta(true)}
+                                onChange={(e) => {
+                                  setTocouConta(true);
+                                  setContaBanco(e.target.value);
+                                }}
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <label className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground/70">
+                                Agência
+                              </label>
+                              <Input
+                                value={contaAgencia}
+                                placeholder={documento.agenciaPdf || "Ex.: 0001-9"}
+                                onFocus={() => setTocouConta(true)}
+                                onChange={(e) => {
+                                  setTocouConta(true);
+                                  setContaAgencia(e.target.value);
+                                }}
+                              />
+                            </div>
+                            <div className="space-y-2">
+                              <label className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground/70">
+                                Conta
+                              </label>
+                              <Input
+                                value={contaConta}
+                                placeholder={documento.contaPdf || "Ex.: 12345-6"}
+                                onFocus={() => setTocouConta(true)}
+                                onChange={(e) => {
+                                  setTocouConta(true);
+                                  setContaConta(e.target.value);
+                                }}
+                              />
+                            </div>
                           </div>
                         )}
                       </div>
-                    )}
 
-                    {precisaUGR && (
-                      <div className="space-y-3 rounded-2xl border border-glass-border/60 bg-secondary/20 p-4">
-                        <div>
-                          <p className="text-sm font-semibold text-foreground">Centro de custo</p>
-                          <p className="mt-1 text-xs text-muted-foreground">
-                            A UGR será usada na etapa de Centro de Custo.
-                          </p>
-                        </div>
-                        <div className="space-y-2">
-                          <label className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
-                            UGR
-                          </label>
-                          <Input
-                            value={ugrNumero}
-                            maxLength={6}
-                            placeholder="Ex.: 153424"
-                            onFocus={() => setTocouUgr(true)}
-                            onChange={(event) => {
-                              setTocouUgr(true);
-                              setUgrNumero(event.target.value);
-                            }}
-                          />
-                        </div>
-                      </div>
-                    )}
-
-                    <div className="space-y-3 rounded-2xl border border-glass-border/60 bg-secondary/20 p-4 lg:col-span-2">
-                      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
-                        <div>
-                          <p className="text-sm font-semibold text-foreground">Dados bancários</p>
-                          <p className="mt-1 text-xs text-muted-foreground">
-                            Escolha usar a conta do PDF ou informe manualmente banco, agência e conta.
-                          </p>
-                        </div>
-                        <div className="flex gap-2">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setTocouConta(true);
-                              setUsarContaPdf(true);
-                            }}
-                            className={`rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
-                              usarContaPdf
-                                ? "border-primary bg-primary/10 text-primary"
-                                : "border-glass-border bg-background text-muted-foreground hover:bg-secondary/50"
-                            }`}
-                          >
-                            Conta do PDF
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setTocouConta(true);
-                              setUsarContaPdf(false);
-                              if (!contaBanco && documento.bancoPdf) setContaBanco(documento.bancoPdf);
-                              if (!contaAgencia && documento.agenciaPdf) setContaAgencia(documento.agenciaPdf);
-                              if (!contaConta && documento.contaPdf) setContaConta(documento.contaPdf);
-                            }}
-                            className={`rounded-lg border px-3 py-2 text-sm font-medium transition-colors ${
-                              !usarContaPdf
-                                ? "border-primary bg-primary/10 text-primary"
-                                : "border-glass-border bg-background text-muted-foreground hover:bg-secondary/50"
-                            }`}
-                          >
-                            Preencher manualmente
-                          </button>
-                        </div>
-                      </div>
-
-                      {usarContaPdf ? (
-                        <div className="rounded-xl border border-glass-border/60 bg-background/70 px-3 py-3 text-sm text-muted-foreground">
-                          {contaPdfDisponivel
-                            ? [documento.bancoPdf && `Banco ${documento.bancoPdf}`, documento.agenciaPdf && `Ag. ${documento.agenciaPdf}`, documento.contaPdf && `Conta ${documento.contaPdf}`].filter(Boolean).join(" · ")
-                            : "Nenhuma conta foi identificada no PDF. Troque para preenchimento manual."}
-                        </div>
-                      ) : (
-                        <div className="grid gap-3 md:grid-cols-3">
-                          <div className="space-y-2">
-                            <label className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
-                              Banco
-                            </label>
-                            <Input
-                              value={contaBanco}
-                              placeholder={documento.bancoPdf || "Ex.: 001"}
-                              onFocus={() => setTocouConta(true)}
-                              onChange={(e) => {
-                                setTocouConta(true);
-                                setContaBanco(e.target.value);
-                              }}
-                            />
-                          </div>
-                          <div className="space-y-2">
-                            <label className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
-                              Agência
-                            </label>
-                            <Input
-                              value={contaAgencia}
-                              placeholder={documento.agenciaPdf || "Ex.: 0001-9"}
-                              onFocus={() => setTocouConta(true)}
-                              onChange={(e) => {
-                                setTocouConta(true);
-                                setContaAgencia(e.target.value);
-                              }}
-                            />
-                          </div>
-                          <div className="space-y-2">
-                            <label className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
-                              Conta
-                            </label>
-                            <Input
-                              value={contaConta}
-                              placeholder={documento.contaPdf || "Ex.: 12345-6"}
-                              onFocus={() => setTocouConta(true)}
-                              onChange={(e) => {
-                                setTocouConta(true);
-                                setContaConta(e.target.value);
-                              }}
-                            />
-                          </div>
-                        </div>
-                      )}
                     </div>
-                  </div>
+                  ) : (
+                    <p className="mt-3 text-sm text-muted-foreground">
+                      As definições operacionais estão recolhidas. Expanda se quiser revisar ou alterar os campos antes da execução.
+                    </p>
+                  )}
                 </div>
               }
               onLimparLogs={() => {
@@ -975,6 +1028,14 @@ function ConferenciaPageContent() {
               onApropriarSIAFI={handleApropriarSIAFI}
               onPararExecucao={handlePararExecucao}
             />
+            <LogExecucaoPanel
+              logs={logs}
+              onLimpar={() => {
+                setLogs([]);
+                setLogsSimples([]);
+                setStatusMensagem("Logs limpos.");
+              }}
+            />
           </div>
         </div>
       </main>
@@ -1002,9 +1063,6 @@ function ConferenciaPageContent() {
           }
           if (saved?.navegador) {
             setBrowserName(saved.navegador === "edge" ? "Edge" : "Chrome");
-          }
-          if (saved?.nivelLog) {
-            setNivelLog(saved.nivelLog);
           }
         }}
         onChromeOpened={async () => {

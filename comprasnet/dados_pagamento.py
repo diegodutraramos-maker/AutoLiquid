@@ -8,7 +8,7 @@ from __future__ import annotations
 import re
 import time
 
-from comprasnet_base import conectar, preencher_data, normalizar_valor, clicar_aba_generica, aguardar_aba_ativa
+from comprasnet.base import conectar, preencher_data, normalizar_valor, clicar_aba_generica, aguardar_aba_ativa
 
 
 def _documentos_para_observacao(dados_extraidos: dict) -> list[tuple[str, str]]:
@@ -687,12 +687,17 @@ def executar(dados_extraidos, data_vencimento_usuario, *, usar_conta_pdf=True, c
         #   usar_conta_pdf=True  → usa valores do PDF (Banco/Agência/Conta extraídos)
         #   usar_conta_pdf=False → usa valores informados pelo usuário
         # O portal não pré-preenche esses campos; deixá-los vazios causa erro de validação.
-        if usar_conta_pdf:
+        usar_conta_pdf_ativo = bool(usar_conta_pdf)
+
+        if usar_conta_pdf_ativo:
             banco_fav   = str(dados_extraidos.get("Banco",   "") or "").strip()
             agencia_fav = str(dados_extraidos.get("Agência", dados_extraidos.get("AgÃªncia", "")) or "").strip()
             conta_fav   = str(dados_extraidos.get("Conta",   "") or "").strip()
             print(f"[7] Preenchendo domicílio bancário do favorecido (PDF): "
                   f"banco={banco_fav} ag={agencia_fav} conta={conta_fav}")
+        elif usar_conta_pdf:
+            banco_fav = agencia_fav = conta_fav = ""
+            print("[7] Domicílio bancário do PDF ignorado: regra operacional desativada.")
         else:
             banco_fav   = str(conta_banco   or "").strip()
             agencia_fav = str(conta_agencia or "").strip()

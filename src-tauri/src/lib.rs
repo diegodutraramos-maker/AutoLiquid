@@ -1,27 +1,148 @@
 use std::{
-    net::{SocketAddr, TcpStream},
     path::{Path, PathBuf},
     process::Command as StdCommand,
-    time::{Duration, Instant},
 };
 
 use tauri_plugin_shell::{
+    process::CommandChild,
     process::CommandEvent,
     ShellExt,
 };
 
-fn wait_for_local_port(addr: SocketAddr, timeout: Duration) -> bool {
-    let started_at = Instant::now();
+fn workspace_root() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(|path| path.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
+}
 
-    while started_at.elapsed() < timeout {
-        if TcpStream::connect_timeout(&addr, Duration::from_millis(250)).is_ok() {
-            return true;
+fn attach_command_logs(mut rx: tauri::async_runtime::Receiver<CommandEvent>, process_pid: u32, label: &'static str) {
+    tauri::async_runtime::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            match event {
+                CommandEvent::Stdout(line) => {
+                    let line = String::from_utf8_lossy(&line).trim().to_string();
+                    if !line.is_empty() {
+                        log::info!("{label}[{process_pid}] stdout: {line}");
+                    }
+                }
+                CommandEvent::Stderr(line) => {
+                    let line = String::from_utf8_lossy(&line).trim().to_string();
+                    if !line.is_empty() {
+                        log::error!("{label}[{process_pid}] stderr: {line}");
+                    }
+                }
+                CommandEvent::Error(error) => {
+                    log::error!("{label}[{process_pid}] erro: {error}");
+                }
+                CommandEvent::Terminated(payload) => {
+                    log::error!(
+                        "{label}[{process_pid}] encerrado: code={:?} signal={:?}",
+                        payload.code,
+                        payload.signal
+                    );
+                }
+                _ => {}
+            }
         }
+    });
+}
 
-        std::thread::sleep(Duration::from_millis(300));
+fn dev_python_candidates() -> Vec<PathBuf> {
+    let root = workspace_root();
+    let mut candidates = vec![
+        root.join(".venv").join("bin").join("python3"),
+        root.join(".venv").join("bin").join("python"),
+        root.join(".venv").join("Scripts").join("python.exe"),
+    ];
+
+    #[cfg(target_os = "windows")]
+    {
+        candidates.push(PathBuf::from("python"));
+        candidates.push(PathBuf::from("py"));
     }
 
-    false
+    #[cfg(not(target_os = "windows"))]
+    {
+        candidates.push(PathBuf::from("python3"));
+        candidates.push(PathBuf::from("python"));
+    }
+
+    candidates
+}
+
+fn spawn_dev_api(app: &tauri::AppHandle) -> Option<CommandChild> {
+    let workspace = workspace_root();
+    let api_script = workspace.join("api.py");
+    if !api_script.exists() {
+        log::error!("api.py nao encontrado em {}", api_script.display());
+        return None;
+    }
+
+    #[cfg(target_family = "unix")]
+    {
+        let _ = StdCommand::new("sh")
+            .args(["-c", "lsof -ti:8000 | xargs kill -9 2>/dev/null || true"])
+            .status();
+    }
+
+    let shell = app.shell();
+    let python_path = dev_python_candidates()
+        .into_iter()
+        .find(|candidate| candidate.is_file() || candidate.components().count() == 1);
+
+    let Some(python_path) = python_path else {
+        log::error!("Nenhum interpretador Python encontrado para rodar a API em modo dev.");
+        return None;
+    };
+
+    let args: Vec<String> = if cfg!(target_os = "windows")
+        && python_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .map(|value| value.eq_ignore_ascii_case("py"))
+            .unwrap_or(false)
+    {
+        vec![api_script.to_string_lossy().to_string()]
+    } else {
+        vec![api_script.to_string_lossy().to_string()]
+    };
+
+    let command = if cfg!(target_os = "windows")
+        && python_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .map(|value| value.eq_ignore_ascii_case("py"))
+            .unwrap_or(false)
+    {
+        shell
+            .command(python_path)
+            .arg(api_script.to_string_lossy().to_string())
+    } else {
+        shell.command(python_path).args(args)
+    };
+
+    match command
+        .current_dir(&workspace)
+        .env("PYTHONUNBUFFERED", "1")
+        .env("AUTO_LIQUID_DEV", "1")
+        .spawn()
+    {
+        Ok((rx, child)) => {
+            let pid = child.pid();
+            attach_command_logs(rx, pid, "api-dev");
+            log::info!(
+                "API dev iniciada a partir de {} com workspace {}",
+                api_script.display(),
+                workspace.display()
+            );
+            Some(child)
+        }
+        Err(error) => {
+            log::error!("Falha ao iniciar api.py em modo dev: {error}");
+            None
+        }
+    }
 }
 
 fn sidecar_dir() -> Option<PathBuf> {
@@ -120,9 +241,9 @@ fn prepare_macos_sidecar() {
 
 #[cfg(target_os = "windows")]
 fn prepare_windows_sidecar() {
-    let _ = StdCommand::new("cmd")
-        .args(["/C", "for /f \"tokens=5\" %a in ('netstat -aon ^| findstr :8000') do taskkill /F /PID %a 2>nul"])
-        .status();
+    // Evita comandos extras na abertura do app no Windows.
+    // Se houver uma API antiga presa na porta, o frontend continua tentando
+    // conectar e o usuário ainda consegue reiniciar a aplicação normalmente.
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -136,62 +257,36 @@ pub fn run() {
                     .build(),
             )?;
 
-            #[cfg(target_os = "macos")]
-            {
-                prepare_macos_sidecar();
-            }
-
-            #[cfg(target_os = "windows")]
-            {
-                prepare_windows_sidecar();
-            }
-
-            let shell = app.shell();
-            let (mut rx, sidecar) = shell
-                .sidecar("api")
-                .expect("sidecar 'api' não encontrado em src-tauri/binaries/")
-                .spawn()
-                .expect("falha ao iniciar o sidecar api");
-            let sidecar_pid = sidecar.pid();
-
-            tauri::async_runtime::spawn(async move {
-                while let Some(event) = rx.recv().await {
-                    match event {
-                        CommandEvent::Stdout(line) => {
-                            let line = String::from_utf8_lossy(&line).trim().to_string();
-                            if !line.is_empty() {
-                                log::info!("api[{sidecar_pid}] stdout: {line}");
-                            }
-                        }
-                        CommandEvent::Stderr(line) => {
-                            let line = String::from_utf8_lossy(&line).trim().to_string();
-                            if !line.is_empty() {
-                                log::error!("api[{sidecar_pid}] stderr: {line}");
-                            }
-                        }
-                        CommandEvent::Error(error) => {
-                            log::error!("api[{sidecar_pid}] erro: {error}");
-                        }
-                        CommandEvent::Terminated(payload) => {
-                            log::error!(
-                                "api[{sidecar_pid}] encerrado: code={:?} signal={:?}",
-                                payload.code,
-                                payload.signal
-                            );
-                        }
-                        _ => {}
-                    }
+            if cfg!(debug_assertions) {
+                let child = spawn_dev_api(app.handle());
+                if child.is_none() {
+                    return Err("falha ao iniciar api.py em modo dev".into());
                 }
-            });
-
-            let api_addr: SocketAddr = "127.0.0.1:8000"
-                .parse()
-                .expect("endereco local da API invalido");
-            if wait_for_local_port(api_addr, Duration::from_secs(8)) {
-                log::info!("API interna pronta em http://127.0.0.1:8000");
+                log::info!(
+                    "API em modo dev iniciada em segundo plano. A interface sera exibida imediatamente e aguardara a conexao local."
+                );
             } else {
-                log::warn!(
-                    "A API interna segue iniciando em segundo plano. A UI abrira a tela de carregamento e continuara aguardando a conexao."
+                #[cfg(target_os = "macos")]
+                {
+                    prepare_macos_sidecar();
+                }
+
+                #[cfg(target_os = "windows")]
+                {
+                    prepare_windows_sidecar();
+                }
+
+                let shell = app.shell();
+                let (rx, sidecar) = shell
+                    .sidecar("api")
+                    .expect("sidecar 'api' não encontrado em src-tauri/binaries/")
+                    .spawn()
+                    .expect("falha ao iniciar o sidecar api");
+                let sidecar_pid = sidecar.pid();
+                attach_command_logs(rx, sidecar_pid, "api");
+
+                log::info!(
+                    "Sidecar da API iniciado em segundo plano. A interface sera exibida imediatamente e aguardara a conexao local."
                 );
             }
 

@@ -56,7 +56,7 @@ def executar_ddf025(
     bool  True se todas as deduções foram concluídas sem erro crítico.
     """
     # Import tardio — evita circular com comprasnet_deducao
-    from comprasnet_deducao import (
+    from comprasnet.deducao import (
         _verificar_interrupcao,
         _preencher_deducao_darf_total,
     )

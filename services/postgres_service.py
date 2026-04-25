@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import socket
@@ -349,6 +350,166 @@ def _garantir_colunas_operacionais(cur) -> None:
         add column if not exists conta_conta text
         """
     )
+
+
+def _garantir_tabelas_operacionais(cur) -> None:
+    cur.execute(
+        """
+        create table if not exists tabelas_operacionais (
+          chave text primary key,
+          dados jsonb not null default '[]'::jsonb,
+          atualizado_em timestamptz not null default now()
+        )
+        """
+    )
+    cur.execute(
+        """
+        create index if not exists idx_tabelas_operacionais_atualizado_em
+        on tabelas_operacionais (atualizado_em desc)
+        """
+    )
+
+
+def _garantir_regras_operacionais(cur) -> None:
+    cur.execute(
+        """
+        create table if not exists regras_operacionais (
+          chave text primary key,
+          dados jsonb not null default '{}'::jsonb,
+          ativo boolean not null default true,
+          atualizado_em timestamptz not null default now()
+        )
+        """
+    )
+    cur.execute(
+        """
+        create index if not exists idx_regras_operacionais_atualizado_em
+        on regras_operacionais (atualizado_em desc)
+        """
+    )
+
+
+def obter_tabela_operacional(chave: str) -> list[dict[str, Any]] | None:
+    if not postgres_habilitado():
+        return None
+
+    with _get_connection() as conn:
+        with conn.cursor() as cur:
+            _garantir_tabelas_operacionais(cur)
+            cur.execute(
+                """
+                select dados
+                from tabelas_operacionais
+                where chave = %s
+                """,
+                (str(chave or "").strip(),),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+
+            dados = row.get("dados")
+            if isinstance(dados, str):
+                try:
+                    dados = json.loads(dados)
+                except Exception:
+                    dados = []
+            return dados if isinstance(dados, list) else []
+
+
+def obter_regras_operacionais() -> list[dict[str, Any]] | None:
+    if not postgres_habilitado():
+        return None
+
+    with _get_connection() as conn:
+        with conn.cursor() as cur:
+            _garantir_regras_operacionais(cur)
+            cur.execute(
+                """
+                select chave, dados, ativo
+                from regras_operacionais
+                order by chave
+                """
+            )
+            rows = cur.fetchall()
+
+    regras: list[dict[str, Any]] = []
+    for row in rows:
+        dados = row.get("dados")
+        if isinstance(dados, str):
+            try:
+                dados = json.loads(dados)
+            except Exception:
+                dados = {}
+        if not isinstance(dados, dict):
+            dados = {}
+        regra = dict(dados)
+        regra["id"] = str(regra.get("id") or row.get("chave") or "").strip()
+        regra["ativa"] = bool(row.get("ativo"))
+        if regra["id"]:
+            regras.append(regra)
+    return regras
+
+
+def salvar_tabela_operacional(chave: str, rows: list[dict[str, Any]]) -> None:
+    if not postgres_habilitado():
+        return
+
+    payload = json.dumps(rows or [], ensure_ascii=False)
+    with _get_connection() as conn:
+        with conn.cursor() as cur:
+            _garantir_tabelas_operacionais(cur)
+            cur.execute(
+                """
+                insert into tabelas_operacionais (chave, dados, atualizado_em)
+                values (%s, %s::jsonb, now())
+                on conflict (chave)
+                do update set
+                  dados = excluded.dados,
+                  atualizado_em = now()
+                """,
+                (str(chave or "").strip(), payload),
+            )
+        conn.commit()
+
+
+def salvar_regras_operacionais(rows: list[dict[str, Any]]) -> None:
+    if not postgres_habilitado():
+        return
+
+    with _get_connection() as conn:
+        with conn.cursor() as cur:
+            _garantir_regras_operacionais(cur)
+            chaves_validas: list[str] = []
+            for row in rows or []:
+                if not isinstance(row, dict):
+                    continue
+                chave = str(row.get("id") or "").strip()
+                if not chave:
+                    continue
+                payload = dict(row)
+                payload["id"] = chave
+                ativo = bool(payload.get("ativa", True))
+                chaves_validas.append(chave)
+                cur.execute(
+                    """
+                    insert into regras_operacionais (chave, dados, ativo, atualizado_em)
+                    values (%s, %s::jsonb, %s, now())
+                    on conflict (chave)
+                    do update set
+                      dados = excluded.dados,
+                      ativo = excluded.ativo,
+                      atualizado_em = now()
+                    """,
+                    (chave, json.dumps(payload, ensure_ascii=False), ativo),
+                )
+
+            if chaves_validas:
+                cur.execute(
+                    "delete from regras_operacionais where not (chave = any(%s))",
+                    (chaves_validas,),
+                )
+        conn.commit()
 
 
 def persistir_documento(snapshot: dict[str, Any]) -> int | None:

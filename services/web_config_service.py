@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import csv
+import logging
 from pathlib import Path
 from typing import Any
 
-from datas_impostos import TABELA_GENERICA, _VENCE_DIA_10, obter_regras_datas_impostos
-from de_para_contratos import obter_arquivo_contratos, recarregar as recarregar_contratos
+from core.datas_impostos import TABELA_GENERICA, _VENCE_DIA_10, obter_regras_datas_impostos
+from core.de_para_contratos import obter_arquivo_contratos, recarregar as recarregar_contratos
+from services import postgres_service
 from services.config_service import (
     carregar_config_app,
     carregar_tabelas_config,
@@ -15,8 +17,10 @@ from services.config_service import (
     salvar_tabelas_config,
 )
 
+log = logging.getLogger(__name__)
+
 WEB_THEME_VALUES = {"light", "dark"}
-WEB_NIVEL_LOG_VALUES = {"simples", "desenvolvedor"}
+WEB_NIVEL_LOG_VALUES = {"desenvolvedor"}
 WEB_NAVEGADOR_VALUES = {"chrome", "edge"}
 
 VPD_PADRAO = [["339030.01", "DSP 001", "3.3.2.3.X.04.00"]]
@@ -226,6 +230,28 @@ def _sanitize_text(value: Any) -> str:
     return str(value or "").strip()
 
 
+def _column_keys(table_key: str) -> list[str]:
+    return [str(coluna.get("key") or "").strip() for coluna in TABLE_DEFINITIONS[table_key]["columns"]]
+
+
+def _normalize_table_rows(table_key: str, rows: list[dict[str, Any]] | list[list[Any]] | None) -> list[dict[str, str]]:
+    keys = _column_keys(table_key)
+    normalized: list[dict[str, str]] = []
+    for raw_row in rows or []:
+        if isinstance(raw_row, dict):
+            row = {key: _sanitize_text(raw_row.get(key)) for key in keys}
+        elif isinstance(raw_row, (list, tuple)):
+            row = {
+                key: _sanitize_text(raw_row[idx] if idx < len(raw_row) else "")
+                for idx, key in enumerate(keys)
+            }
+        else:
+            continue
+        if any(row.values()):
+            normalized.append(row)
+    return normalized
+
+
 def _filter_rows(rows: list[dict[str, str]], search: str) -> list[dict[str, str]]:
     termo = search.strip().lower()
     if not termo:
@@ -259,6 +285,28 @@ def _load_contract_rows() -> list[dict[str, str]]:
                     ),
                 }
             )
+    if not rows:
+        try:
+            recarregar_contratos()
+            caminho = Path(obter_arquivo_contratos())
+            with caminho.open(encoding="utf-8-sig", newline="") as arquivo:
+                primeira = arquivo.readline()
+                if "SARF" in primeira.upper():
+                    arquivo.seek(0)
+                reader = csv.DictReader(arquivo)
+                for row in reader:
+                    rows.append(
+                        {
+                            "sarf": _sanitize_text(row.get("SARF")),
+                            "ig": _sanitize_text(row.get("IG")),
+                            "cnpj": _sanitize_text(row.get("CNPJ")),
+                            "razaoSocial": _sanitize_text(
+                                row.get("RAZAO SOCIAL") or row.get("RAZÃO SOCIAL") or row.get("RAZ\u00c3O SOCIAL")
+                            ),
+                        }
+                    )
+        except Exception:
+            pass
     return rows
 
 
@@ -292,6 +340,8 @@ def _save_contract_rows(rows: list[dict[str, Any]]) -> None:
 def _rows_from_config(config_key: str, keys: list[str], default_rows: list[tuple[str, ...]] | list[list[str]]) -> list[dict[str, str]]:
     dados = carregar_tabelas_config()
     lista = dados.get(config_key, default_rows)
+    if not lista:
+        lista = default_rows
     rows: list[dict[str, str]] = []
     for row in lista:
         row_lista = list(row)
@@ -368,11 +418,7 @@ def _save_datas_impostos_rows(rows: list[dict[str, Any]]) -> None:
     salvar_tabelas_config(dados)
 
 
-def carregar_tabela_web(table_key: str, search: str = "") -> dict[str, Any]:
-    if table_key not in TABLE_DEFINITIONS:
-        raise KeyError(table_key)
-
-    definition = TABLE_DEFINITIONS[table_key]
+def _carregar_tabela_local(table_key: str) -> list[dict[str, str]]:
     if table_key == "contratos":
         rows = _load_contract_rows()
     elif table_key == "vpd":
@@ -399,24 +445,10 @@ def carregar_tabela_web(table_key: str, search: str = "") -> dict[str, Any]:
         )
     else:
         rows = _load_datas_impostos_rows()
-
-    filtered_rows = _filter_rows(rows, search)
-    return {
-        "key": table_key,
-        "label": definition["label"],
-        "description": definition["description"],
-        "searchPlaceholder": definition["search_placeholder"],
-        "columns": definition["columns"],
-        "rows": filtered_rows,
-        "totalRows": len(filtered_rows),
-        "fixedRows": bool(definition.get("fixed_rows", False)),
-    }
+    return _normalize_table_rows(table_key, rows)
 
 
-def salvar_tabela_web(table_key: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
-    if table_key not in TABLE_DEFINITIONS:
-        raise KeyError(table_key)
-
+def _salvar_tabela_local(table_key: str, rows: list[dict[str, Any]]) -> None:
     if table_key == "contratos":
         _save_contract_rows(rows)
     elif table_key == "vpd":
@@ -436,6 +468,67 @@ def salvar_tabela_web(table_key: str, rows: list[dict[str, Any]]) -> dict[str, A
     else:
         _save_datas_impostos_rows(rows)
 
+
+def _carregar_tabela_remota(table_key: str) -> list[dict[str, str]] | None:
+    if not postgres_service.postgres_habilitado():
+        return None
+    try:
+        rows = postgres_service.obter_tabela_operacional(table_key)
+        if rows is None:
+            return None
+        return _normalize_table_rows(table_key, rows)
+    except Exception:
+        log.exception("Falha ao carregar tabela '%s' do PostgreSQL.", table_key)
+        return None
+
+
+def _salvar_tabela_remota(table_key: str, rows: list[dict[str, Any]]) -> bool:
+    if not postgres_service.postgres_habilitado():
+        return False
+    try:
+        postgres_service.salvar_tabela_operacional(table_key, _normalize_table_rows(table_key, rows))
+        return True
+    except Exception:
+        log.exception("Falha ao salvar tabela '%s' no PostgreSQL.", table_key)
+        return False
+
+
+def carregar_tabela_web(table_key: str, search: str = "") -> dict[str, Any]:
+    if table_key not in TABLE_DEFINITIONS:
+        raise KeyError(table_key)
+
+    definition = TABLE_DEFINITIONS[table_key]
+    storage = "local"
+    rows = _carregar_tabela_remota(table_key)
+    if rows is None:
+        rows = _carregar_tabela_local(table_key)
+        if _salvar_tabela_remota(table_key, rows):
+            storage = "postgres-bootstrap"
+    else:
+        storage = "postgres"
+
+    filtered_rows = _filter_rows(rows, search)
+    return {
+        "key": table_key,
+        "label": definition["label"],
+        "description": definition["description"],
+        "searchPlaceholder": definition["search_placeholder"],
+        "columns": definition["columns"],
+        "rows": filtered_rows,
+        "totalRows": len(filtered_rows),
+        "fixedRows": bool(definition.get("fixed_rows", False)),
+        "storage": storage,
+    }
+
+
+def salvar_tabela_web(table_key: str, rows: list[dict[str, Any]]) -> dict[str, Any]:
+    if table_key not in TABLE_DEFINITIONS:
+        raise KeyError(table_key)
+
+    normalized_rows = _normalize_table_rows(table_key, rows)
+    if not _salvar_tabela_remota(table_key, normalized_rows):
+        _salvar_tabela_local(table_key, normalized_rows)
+
     return carregar_tabela_web(table_key)
 
 
@@ -452,9 +545,7 @@ def carregar_configuracoes_web() -> dict[str, Any]:
     if not 1 <= chrome_porta <= 65535:
         chrome_porta = 9222
 
-    nivel_log = _sanitize_text(config.get("nivel_log") or "desenvolvedor").lower()
-    if nivel_log not in WEB_NIVEL_LOG_VALUES:
-        nivel_log = "desenvolvedor"
+    nivel_log = "desenvolvedor"
 
     navegador = _sanitize_text(config.get("navegador") or "chrome").lower()
     if navegador not in WEB_NAVEGADOR_VALUES:
@@ -483,9 +574,7 @@ def salvar_configuracoes_web(dados: dict[str, Any]) -> dict[str, Any]:
     if not 1 <= chrome_porta <= 65535:
         raise ValueError("Porta do Chrome deve ficar entre 1 e 65535.")
 
-    nivel_log = _sanitize_text(dados.get("nivelLog") or "desenvolvedor").lower()
-    if nivel_log not in WEB_NIVEL_LOG_VALUES:
-        nivel_log = "desenvolvedor"
+    nivel_log = "desenvolvedor"
 
     navegador = _sanitize_text(dados.get("navegador") or "chrome").lower()
     if navegador not in WEB_NAVEGADOR_VALUES:

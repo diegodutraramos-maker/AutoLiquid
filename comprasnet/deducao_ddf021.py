@@ -7,7 +7,7 @@ As funções auxiliares são importadas de comprasnet_deducao com import tardio 
 para evitar importação circular.
 """
 import logging
-from datas_impostos import calcular_datas
+from core.datas_impostos import calcular_datas
 
 log = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ def executar_ddf021(
     bool  True se todas as deduções foram concluídas sem erro crítico.
     """
     # Import tardio — evita circular com comprasnet_deducao
-    from comprasnet_deducao import (
+    from comprasnet.deducao import (
         _verificar_interrupcao,
         _ded_codigo,
         _preencher_deducao_darf_total,

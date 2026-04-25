@@ -17,20 +17,20 @@ export function DateFields({ dates, onDatesChange, compact = false }: DateFields
       </h3>
       <div className={compact ? "grid gap-4 sm:grid-cols-2" : "grid gap-6 sm:grid-cols-2"}>
         <GlassInput
+          label="Vencimento / Pagamento"
+          type="text"
+          value={dates.vencimento}
+          onChange={(e) =>
+            onDatesChange?.({ ...dates, vencimento: e.target.value })
+          }
+          placeholder="DD/MM/AAAA"
+        />
+        <GlassInput
           label="Data de Apuração"
           type="text"
           value={dates.apuracao}
           onChange={(e) =>
             onDatesChange?.({ ...dates, apuracao: e.target.value })
-          }
-          placeholder="DD/MM/AAAA"
-        />
-        <GlassInput
-          label="Data de Vencimento"
-          type="text"
-          value={dates.vencimento}
-          onChange={(e) =>
-            onDatesChange?.({ ...dates, vencimento: e.target.value })
           }
           placeholder="DD/MM/AAAA"
         />

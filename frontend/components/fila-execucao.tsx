@@ -130,7 +130,22 @@ export function FilaExecucao({
   paradaSolicitada = false,
 }: FilaExecucaoProps) {
   const concluidos = etapas.filter((e) => e.status === "concluido").length;
-  const [deducoesExpandidas, setDeducoesExpandidas] = useState(true);
+  const [deducoesExpandidas, setDeducoesExpandidas] = useState(false);
+  const deducoesVisiveis = Array.from(
+    deducoes.reduce((acc, deducao) => {
+      const siafi = String(deducao.siafi || "").toUpperCase();
+      if (!acc.has(siafi)) {
+        acc.set(siafi, {
+          ...deducao,
+          tipo: siafi,
+          valor: deducoes
+            .filter((item) => String(item.siafi || "").toUpperCase() === siafi)
+            .reduce((total, item) => total + item.valor, 0),
+        });
+      }
+      return acc;
+    }, new Map<string, Deducao>())
+  ).map(([_, item]) => item);
 
   return (
     <GlassCard className="flex h-full flex-col">
@@ -179,7 +194,7 @@ export function FilaExecucao({
                   <span className="min-w-0 flex-1 text-sm font-medium leading-snug text-foreground">
                     {etapa.nome}
                   </span>
-                  {isDeducaoEtapa ? (
+                  {etapa.id === 3 && deducoesVisiveis.length > 0 ? (
                     <span
                       role="button"
                       tabIndex={0}
@@ -216,9 +231,9 @@ export function FilaExecucao({
                 </button>
 
                 {/* Sub-lista de deduções individuais */}
-                {isDeducaoEtapa && deducoesExpandidas && (
+                {etapa.id === 3 && deducoesVisiveis.length > 0 && deducoesExpandidas && (
                   <div className="ml-4 space-y-1.5 border-l-2 border-glass-border pl-3">
-                    {deducoes.map((ded) => {
+                    {deducoesVisiveis.map((ded) => {
                       const isDedAtiva = deducaoAtivaId === ded.id;
                       const dedClickable = Boolean(onExecutarDeducao) && !isExecutando;
                       return (
@@ -238,10 +253,10 @@ export function FilaExecucao({
                           <DeducaoStatusIcon status={ded.status} isAtiva={isDedAtiva} />
                           <div className="min-w-0 flex-1">
                             <p className="truncate text-xs font-medium text-foreground">
-                              {ded.tipo || ded.siafi}
+                              {ded.siafi}
                             </p>
                             <p className="text-[10px] text-muted-foreground">
-                              {ded.siafi} · {formatCurrency(ded.valor)}
+                              Recolhido - {formatCurrency(ded.valor)}
                             </p>
                           </div>
                           <button

@@ -96,10 +96,14 @@ export function TabelasModal({
     if (!isOpen) return;
 
     let cancelled = false;
+    // Rastreia quais abas ESTA execução do efeito iniciou o carregamento,
+    // para poder limpar o loadingTabs no cleanup caso sejam canceladas.
+    const tabsIniciadas = new Set<TableKey>();
 
     const carregarTab = async (tab: TableKey, options?: { silent?: boolean }) => {
       if (datasets[tab] || loadingTabs[tab]) return;
 
+      tabsIniciadas.add(tab);
       setLoadingTabs((current) => ({ ...current, [tab]: true }));
       if (!options?.silent && tab === activeTab) {
         setErro("");
@@ -109,9 +113,11 @@ export function TabelasModal({
       try {
         const data = await fetchTabela(tab);
         if (cancelled) return;
+        tabsIniciadas.delete(tab); // concluiu — não precisa limpar no cleanup
         setDatasets((current) => ({ ...current, [tab]: data }));
         setDrafts((current) => ({ ...current, [tab]: data.rows }));
       } catch (error) {
+        tabsIniciadas.delete(tab);
         if (cancelled || options?.silent || tab !== activeTab) return;
         setErro(
           error instanceof Error
@@ -134,8 +140,24 @@ export function TabelasModal({
 
     return () => {
       cancelled = true;
+      // Limpa o estado de carregamento das abas que foram iniciadas mas não
+      // concluíram — sem isso, loadingTabs[tab] fica preso em `true` e as
+      // abas nunca carregam na próxima abertura do modal.
+      if (tabsIniciadas.size > 0) {
+        setLoadingTabs((current) => {
+          const next = { ...current };
+          for (const tab of tabsIniciadas) {
+            next[tab] = false;
+          }
+          return next;
+        });
+      }
     };
-  }, [activeTab, datasets, isOpen, tabs]);
+  // IMPORTANTE: `datasets` foi removido intencionalmente das dependências.
+  // Incluí-lo causava re-execuções em cascata que cancelavam carregamentos
+  // paralelos antes de concluírem, deixando loadingTabs preso em `true`.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, isOpen, tabs]);
 
   if (!isOpen) return null;
 

@@ -7,10 +7,10 @@ import {
   Check,
   CheckCircle2,
   Chrome,
-  Code2,
   Coffee,
   Copy,
-  FileText,
+  Database,
+  ExternalLink,
   Globe,
   Loader2,
   Moon,
@@ -23,6 +23,7 @@ import {
   Tag,
   X,
 } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { useTheme } from "next-themes";
 import { GlassButton, GlassCard } from "./glass-card";
 import {
@@ -52,6 +53,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   nivelLog: "desenvolvedor",
 };
 
+const SUPABASE_PROJECT_URL = "https://supabase.com/dashboard/project/fxffsintfysatyglcmmi";
+
 type Aba = "basico" | "avancado";
 
 export function ConfiguracoesModal({
@@ -61,6 +64,7 @@ export function ConfiguracoesModal({
   onChromeOpened,
   onOpenDatas,
 }: ConfiguracoesModalProps) {
+  const router = useRouter();
   const { setTheme } = useTheme();
   const [abaAtiva, setAbaAtiva] = useState<Aba>("basico");
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_SETTINGS);
@@ -71,6 +75,12 @@ export function ConfiguracoesModal({
   const [abrindoNavegador, setAbrindoNavegador] = useState(false);
   const [recarregando, setRecarregando] = useState(false);
   const [msgRecarregar, setMsgRecarregar] = useState("");
+
+  // Debug avançado
+  const [detectando, setDetectando] = useState(false);
+  const [relatorioCopiado, setRelatorioCopiado] = useState(false);
+  const [erroDeteccao, setErroDeteccao] = useState("");
+  const [relatorioTexto, setRelatorioTexto] = useState("");
 
   // Atualização
   const [verificandoUpdate, setVerificandoUpdate] = useState(false);
@@ -155,6 +165,55 @@ export function ConfiguracoesModal({
       );
     } finally {
       setRecarregando(false);
+    }
+  };
+
+  const copiarTexto = (texto: string) => {
+    // Tenta clipboard moderno; fallback via textarea + execCommand
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(texto).catch(() => copiarViaExecCommand(texto));
+    } else {
+      copiarViaExecCommand(texto);
+    }
+  };
+
+  const copiarViaExecCommand = (texto: string) => {
+    const ta = document.createElement("textarea");
+    ta.value = texto;
+    ta.style.position = "fixed";
+    ta.style.opacity = "0";
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    try { document.execCommand("copy"); } catch (_) { /* silencia */ }
+    document.body.removeChild(ta);
+  };
+
+  const handleDetectarPaginacao = async () => {
+    setDetectando(true);
+    setErroDeteccao("");
+    setRelatorioCopiado(false);
+    setRelatorioTexto("");
+    try {
+      const res = await fetch("http://127.0.0.1:8000/api/debug/detectar-paginacao", {
+        method: "POST",
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(err.detail || "Erro desconhecido");
+      }
+      const data = await res.json();
+      const texto = JSON.stringify(data.relatorio ?? data, null, 2);
+      setRelatorioTexto(texto);
+      copiarTexto(texto);
+      setRelatorioCopiado(true);
+      setTimeout(() => setRelatorioCopiado(false), 3000);
+    } catch (error) {
+      setErroDeteccao(
+        error instanceof Error ? error.message : "Falha ao detectar campos."
+      );
+    } finally {
+      setDetectando(false);
     }
   };
 
@@ -548,6 +607,19 @@ export function ConfiguracoesModal({
                 {/* ── ABA AVANÇADO ── */}
                 {abaAtiva === "avancado" && (
                   <>
+                    {/* Integrações */}
+                    <section>
+                      <button
+                        type="button"
+                        onClick={() => abrirUrl(SUPABASE_PROJECT_URL)}
+                        className="flex items-center gap-2 rounded-xl border border-sky-500/20 bg-sky-500/10 px-3 py-2 text-sm font-medium text-foreground transition hover:border-sky-500/35 hover:bg-sky-500/15"
+                      >
+                        <Database className="h-4 w-4 text-sky-600" />
+                        Supabase
+                        <ExternalLink className="h-3 w-3 text-muted-foreground" />
+                      </button>
+                    </section>
+
                     {/* Porta de depuração */}
                     <section className="rounded-2xl border border-glass-border bg-secondary/25 px-4 py-4">
                       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
@@ -575,48 +647,6 @@ export function ConfiguracoesModal({
                             className="w-full rounded-xl border border-glass-border bg-background/80 py-2.5 pl-3 pr-4 text-sm text-foreground shadow-inner outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
                           />
                         </div>
-                      </div>
-                    </section>
-
-                    {/* Log de execução */}
-                    <section className="space-y-3">
-                      <div>
-                        <h3 className="text-sm font-semibold text-foreground">Log de Execução</h3>
-                        <p className="text-sm text-muted-foreground">
-                          Escolha como as mensagens da automação são exibidas.
-                        </p>
-                      </div>
-                      <div className="grid gap-3 sm:grid-cols-2">
-                        {[
-                          { value: "simples" as const, title: "Simplificado", description: "Mensagens claras com confirmações do que foi conferido e executado.", icon: FileText },
-                          { value: "desenvolvedor" as const, title: "Desenvolvedor", description: "Mensagens técnicas detalhadas para diagnóstico e depuração.", icon: Code2 },
-                        ].map((option) => {
-                          const Icon = option.icon;
-                          const active = settings.nivelLog === option.value;
-                          return (
-                            <button
-                              key={option.value}
-                              type="button"
-                              onClick={() => setSettings((c) => ({ ...c, nivelLog: option.value }))}
-                              className={[
-                                "rounded-2xl border px-4 py-4 text-left transition-all",
-                                active
-                                  ? "border-primary bg-primary/10 shadow-[0_12px_30px_-24px_rgba(79,70,229,0.8)]"
-                                  : "border-glass-border bg-secondary/30 hover:border-primary/40 hover:bg-secondary/55",
-                              ].join(" ")}
-                            >
-                              <div className="flex items-center gap-3">
-                                <div className={["flex h-10 w-10 items-center justify-center rounded-xl border", active ? "border-primary/30 bg-primary/15 text-primary" : "border-glass-border bg-background/70 text-muted-foreground"].join(" ")}>
-                                  <Icon className="h-5 w-5" />
-                                </div>
-                                <div>
-                                  <p className="font-medium text-foreground">{option.title}</p>
-                                  <p className="mt-1 text-sm text-muted-foreground">{option.description}</p>
-                                </div>
-                              </div>
-                            </button>
-                          );
-                        })}
                       </div>
                     </section>
 
@@ -670,6 +700,105 @@ export function ConfiguracoesModal({
                           {msgRecarregar && (
                             <div className="mt-3 rounded-xl border border-emerald-500/20 bg-background/75 px-3 py-2 text-sm text-emerald-700">
                               {msgRecarregar}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </section>
+
+                    {/* ── Debug: Detectar campos de paginação ── */}
+                    <section className="rounded-2xl border border-violet-500/20 bg-violet-500/8 px-4 py-4">
+                      <div className="flex items-start gap-3">
+                        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-violet-500/20 bg-background/80 text-violet-600 shadow-[0_16px_30px_-24px_rgba(139,92,246,0.7)]">
+                          {/* Ícone de aranha inline */}
+                          <svg
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth="1.6"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                            className="h-5 w-5"
+                          >
+                            {/* corpo */}
+                            <ellipse cx="12" cy="13" rx="3" ry="3.5" />
+                            {/* cabeça */}
+                            <circle cx="12" cy="8.5" r="1.8" />
+                            {/* pernas esquerdas */}
+                            <path d="M9 11.5 L5 9" />
+                            <path d="M9 13 L4 13" />
+                            <path d="M9 14.5 L5 17" />
+                            {/* pernas direitas */}
+                            <path d="M15 11.5 L19 9" />
+                            <path d="M15 13 L20 13" />
+                            <path d="M15 14.5 L19 17" />
+                            {/* fio */}
+                            <line x1="12" y1="6.7" x2="12" y2="3" />
+                          </svg>
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center justify-between gap-3">
+                            <div>
+                              <h3 className="text-sm font-semibold text-foreground">
+                                Diagnóstico de paginação
+                              </h3>
+                              <p className="mt-1 text-sm text-muted-foreground">
+                                Inspeciona a página de apropriação no Chrome e copia o relatório de campos detectados para a área de transferência.
+                              </p>
+                            </div>
+                            <GlassButton
+                              variant="ghost"
+                              size="sm"
+                              onClick={handleDetectarPaginacao}
+                              disabled={detectando}
+                              className="shrink-0 border border-violet-500/20 bg-background/80 text-foreground hover:bg-background"
+                            >
+                              {detectando ? (
+                                <>
+                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                  Detectando...
+                                </>
+                              ) : relatorioCopiado ? (
+                                <>
+                                  <Check className="h-4 w-4 text-emerald-600" />
+                                  Copiado!
+                                </>
+                              ) : (
+                                <>
+                                  <Copy className="h-4 w-4" />
+                                  Detectar e copiar
+                                </>
+                              )}
+                            </GlassButton>
+                          </div>
+                          {erroDeteccao && (
+                            <div className="mt-3 rounded-xl border border-destructive/25 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+                              {erroDeteccao}
+                            </div>
+                          )}
+                          {relatorioTexto && (
+                            <div className="mt-3 space-y-1.5">
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs text-muted-foreground">
+                                  Relatório detectado — selecione tudo e copie (Ctrl+A → Ctrl+C)
+                                </span>
+                                <GlassButton
+                                  variant="ghost"
+                                  size="sm"
+                                  className="h-6 px-2 text-xs"
+                                  onClick={() => { copiarTexto(relatorioTexto); setRelatorioCopiado(true); setTimeout(() => setRelatorioCopiado(false), 2000); }}
+                                >
+                                  <Copy className="h-3 w-3" />
+                                  {relatorioCopiado ? "Copiado!" : "Copiar"}
+                                </GlassButton>
+                              </div>
+                              <textarea
+                                readOnly
+                                value={relatorioTexto}
+                                rows={8}
+                                onClick={(e) => (e.target as HTMLTextAreaElement).select()}
+                                className="w-full rounded-xl border border-glass-border bg-zinc-950/80 px-3 py-2 font-mono text-[11px] text-emerald-400 outline-none resize-none"
+                              />
                             </div>
                           )}
                         </div>

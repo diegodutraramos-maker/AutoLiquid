@@ -56,7 +56,34 @@ def salvar_config_app(dados):
 
 
 def carregar_tabelas_config():
-    return carregar_json(CAMINHO_TABELAS, {})
+    dados = carregar_json(CAMINHO_TABELAS, {})
+    if not isinstance(dados, dict):
+        dados = {}
+
+    recurso_padrao = caminho_recurso(CAMINHO_TABELAS.name)
+    if not recurso_padrao.exists():
+        return dados
+
+    try:
+        with open(recurso_padrao, encoding="utf-8") as arquivo:
+            padrao = json.load(arquivo)
+    except Exception:
+        return dados
+
+    if not isinstance(padrao, dict):
+        return dados
+
+    alterado = False
+    for chave, valor in padrao.items():
+        atual = dados.get(chave)
+        if atual in (None, [], {}):
+            dados[chave] = valor
+            alterado = True
+
+    if alterado:
+        salvar_json(CAMINHO_TABELAS, dados)
+
+    return dados
 
 
 def salvar_tabelas_config(dados):

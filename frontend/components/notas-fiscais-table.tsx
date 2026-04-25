@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, type ReactNode } from "react";
-import { CalendarDays, Check, ChevronDown, ChevronRight, Loader2, X, AlertTriangle } from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Loader2, X, AlertTriangle } from "lucide-react";
 import { GlassCard, GlassButton, GlassTable, GlassTableRow, GlassTableCell, GlassPanel } from "./glass-card";
 import type { Deducao, Empenho, NotaFiscal, PendenciaDocumento, ProcessDates, ResumoFinanceiro } from "@/lib/data";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -245,21 +245,40 @@ export function NotasFiscaisTable({
   pendenciasExtraContent,
   onLimparLogs,
 }: NotasFiscaisTableProps) {
-  const [activeTab, setActiveTab] = useState<TabType>("notas");
+  const [activeTab, setActiveTab] = useState<TabType>("pendencias");
   const [expandedDeducoes, setExpandedDeducoes] = useState<number[]>([]);
   const [retencoesEditadas, setRetencoesEditadas] = useState<Record<string, string>>({});
+  const [basesEditadas, setBasesEditadas] = useState<Record<string, string>>({});
   const totalDeducoes = deducoes.reduce((acc, deducao) => acc + deducao.valor, 0);
   const totalNotas = notasFiscais.reduce((acc, nota) => acc + nota.valor, 0);
   const basePercentualTotal = resumo.bruto > 0 ? resumo.bruto : totalNotas;
-
-  const totalLogs = nivelLog === "simples" ? logsSimples.length : logs.length;
+  const deducoesAgrupadas = Array.from(
+    deducoes.reduce((acc, deducao) => {
+      const chave = String(deducao.siafi || deducao.codigo || "OUTROS").toUpperCase();
+      const grupo = acc.get(chave) ?? {
+        id: chave,
+        titulo: chave,
+        valor: 0,
+        quantidade: 0,
+        codigos: new Set<string>(),
+        itens: [] as Deducao[],
+      };
+      grupo.valor += deducao.valor;
+      grupo.quantidade += 1;
+      if (deducao.codigo && deducao.codigo !== "—") {
+        grupo.codigos.add(deducao.codigo);
+      }
+      grupo.itens.push(deducao);
+      acc.set(chave, grupo);
+      return acc;
+    }, new Map<string, { id: string; titulo: string; valor: number; quantidade: number; codigos: Set<string>; itens: Deducao[] }>())
+  ).map(([_, grupo]) => grupo);
 
   const tabs: { id: TabType; label: string }[] = [
-    { id: "notas", label: "Notas Fiscais" },
-    { id: "empenhos", label: "Empenhos" },
-    { id: "deducoes", label: "Deduções" },
-    { id: "pendencias", label: "Pendências" },
-    { id: "log", label: "Log de Execução" },
+    { id: "pendencias", label: `Pendências (${pendencias.length})` },
+    { id: "notas", label: `Documentos (${notasFiscais.length})` },
+    { id: "empenhos", label: `Empenhos (${empenhos.length})` },
+    { id: "deducoes", label: `Deduções (${deducoesAgrupadas.length})` },
   ];
 
   const alternarDeducao = (id: number) => {
@@ -273,6 +292,22 @@ export function NotasFiscaisTable({
       ...current,
       [key]: value,
     }));
+  };
+
+  const atualizarBase = (key: string, value: string) => {
+    setBasesEditadas((current) => ({ ...current, [key]: value }));
+  };
+
+  const normalizarBase = (key: string, valorOriginal: number) => {
+    setBasesEditadas((current) => {
+      const raw = current[key];
+      if (raw === undefined) return current;
+      const parsed = parseEditableCurrency(raw);
+      return {
+        ...current,
+        [key]: parsed !== null ? formatEditableCurrency(parsed) : formatEditableCurrency(valorOriginal),
+      };
+    });
   };
 
   const normalizarRetencao = (key: string, valorOriginal: number) => {
@@ -289,12 +324,12 @@ export function NotasFiscaisTable({
 
   return (
     <GlassCard className="overflow-hidden">
-      <div className="flex flex-wrap border-b border-glass-border">
+      <div className="flex flex-nowrap overflow-x-auto border-b border-glass-border">
         {tabs.map((tab) => (
           <button
             key={tab.id}
             onClick={() => setActiveTab(tab.id)}
-            className={`min-w-0 px-5 py-3 text-sm font-medium transition-colors sm:px-6 ${
+            className={`shrink-0 whitespace-nowrap px-3 py-3 text-[13px] font-medium transition-colors sm:px-4 lg:px-5 ${
               activeTab === tab.id
                 ? "border-b-2 border-primary text-foreground"
                 : "text-muted-foreground hover:text-foreground"
@@ -327,19 +362,72 @@ export function NotasFiscaisTable({
 
         {activeTab === "empenhos" && (
           empenhos.length > 0 ? (
-            <GlassTable headers={["", "Empenho", "Situação", "Recurso"]}>
-              {empenhos.map((empenho, index) => (
-                <GlassTableRow key={empenho.id}>
-                  <GlassTableCell className="w-12 text-muted-foreground">
-                    {index + 1}
-                  </GlassTableCell>
-                  <GlassTableCell className="font-medium">
-                    {empenho.numero}
-                  </GlassTableCell>
-                  <GlassTableCell>{empenho.situacao}</GlassTableCell>
-                  <GlassTableCell>{empenho.recurso}</GlassTableCell>
-                </GlassTableRow>
-              ))}
+            <GlassTable
+              compact
+              headers={["#", "Empenho", "Sit.", "Natureza", "Rec.", "Valor"]}
+              headerTitles={["", "Número do Empenho", "Situação", "Natureza da Despesa", "Recurso", "Valor Liquidado"]}
+              className="overflow-x-hidden"
+            >
+              {empenhos.map((empenho, index) => {
+                // Usa o valor individual extraído do PDF; se ausente, divide o bruto igualmente
+                const valorEmpenho = (empenho.valor && empenho.valor > 0)
+                  ? empenho.valor
+                  : empenhos.length === 1
+                    ? resumo.bruto
+                    : resumo.bruto / empenhos.length;
+                const saldoEmpenho = empenho.saldo ?? 0;
+                const totalRef = valorEmpenho + saldoEmpenho;
+                // Proporção usada (valor liquidado) em relação ao total do empenho
+                const pctUso = totalRef > 0 ? Math.min((valorEmpenho / totalRef) * 100, 100) : 0;
+                const temSaldo = totalRef > 0;
+                return (
+                  <GlassTableRow key={empenho.id}>
+                    {/* # */}
+                    <GlassTableCell compact className="w-5 text-center text-xs text-muted-foreground">
+                      {index + 1}
+                    </GlassTableCell>
+                    {/* Empenho — tabular nums, não quebra */}
+                    <GlassTableCell compact className="whitespace-nowrap font-mono text-xs font-medium">
+                      {empenho.numero}
+                    </GlassTableCell>
+                    {/* Situação */}
+                    <GlassTableCell compact className="whitespace-nowrap text-xs">
+                      {empenho.situacao}
+                    </GlassTableCell>
+                    {/* Natureza */}
+                    <GlassTableCell compact className="whitespace-nowrap text-xs tabular-nums">
+                      {empenho.natureza || "—"}
+                    </GlassTableCell>
+                    {/* Recurso */}
+                    <GlassTableCell compact className="text-center text-xs">
+                      {empenho.recurso}
+                    </GlassTableCell>
+                    {/* Valor + barra */}
+                    <GlassTableCell compact className="text-right">
+                      <div className="flex flex-col items-end gap-0.5">
+                        <span className="whitespace-nowrap text-xs font-semibold tabular-nums">
+                          {valorEmpenho > 0 ? formatCurrency(valorEmpenho) : "—"}
+                        </span>
+                        {temSaldo && (
+                          <div className="group/bar relative w-full min-w-[60px]">
+                            {/* Barra de uso/saldo */}
+                            <div className="h-[3px] w-full overflow-hidden rounded-full bg-white/10">
+                              <div
+                                className="h-full rounded-full bg-emerald-400/70 transition-all"
+                                style={{ width: `${pctUso}%` }}
+                              />
+                            </div>
+                            {/* Tooltip: saldo restante ao passar o mouse */}
+                            <div className="pointer-events-none absolute bottom-full right-0 z-10 mb-1.5 hidden whitespace-nowrap rounded-md border border-glass-border bg-background/95 px-2 py-1 text-[11px] text-muted-foreground shadow-lg group-hover/bar:block">
+                              Saldo: <span className="font-semibold text-foreground">{formatCurrency(saldoEmpenho)}</span>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    </GlassTableCell>
+                  </GlassTableRow>
+                );
+              })}
             </GlassTable>
           ) : (
             <div className="flex h-32 items-center justify-center text-muted-foreground">
@@ -355,257 +443,310 @@ export function NotasFiscaisTable({
           </div>
         )}
 
-        {activeTab === "log" && (
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-              <span className="text-xs text-muted-foreground">
-                {nivelLog === "simples" ? "Log simplificado" : "Log desenvolvedor"}
-                {totalLogs > 0 && ` · ${totalLogs} linha${totalLogs !== 1 ? "s" : ""}`}
-              </span>
-              {onLimparLogs && (
-                <GlassButton
-                  variant="ghost"
-                  size="sm"
-                  onClick={onLimparLogs}
-                  disabled={totalLogs === 0}
-                >
-                  limpar
-                </GlassButton>
-              )}
-            </div>
-
-            {nivelLog === "simples" ? (
-              logsSimples.length === 0 ? (
-                <div className="flex h-32 items-center justify-center text-sm text-muted-foreground">
-                  Nenhum registro ainda — execute a automação para ver as confirmações.
-                </div>
-              ) : (
-                <div className="rounded-2xl border border-glass-border/70 bg-background/40 p-3">
-                  {logsSimples.map((linha, i) => (
-                    <SimpleLogLine key={i} raw={linha} />
-                  ))}
-                </div>
-              )
-            ) : (
-              <GlassPanel className="min-h-[8rem] bg-background/50">
-                {logs.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">Nenhum log disponível</p>
-                ) : (
-                  <div className="space-y-2">
-                    {logs.map((linha, i) => (
-                      <DevLogLine key={i} raw={linha} />
-                    ))}
-                  </div>
-                )}
-              </GlassPanel>
-            )}
-          </div>
-        )}
-
         {activeTab === "deducoes" && (
-          deducoes.length > 0 ? (
+          deducoesAgrupadas.length > 0 ? (
             <div className="space-y-4">
               <div className="grid gap-3 md:grid-cols-3">
                 <div className="rounded-xl border border-glass-border/70 bg-secondary/25 px-4 py-3">
                   <div className="text-[11px] uppercase tracking-[0.24em] text-muted-foreground">
-                    Total Deduções
+                    Total Deduzido
                   </div>
                   <div className="mt-2 text-lg font-semibold text-foreground">
-                    {formatCurrency(totalDeducoes)}
+                    {formatCurrency(deducoes.reduce((acc, item) => acc + item.valor, 0))}
                   </div>
                 </div>
                 <div className="rounded-xl border border-glass-border/70 bg-secondary/25 px-4 py-3">
                   <div className="text-[11px] uppercase tracking-[0.24em] text-muted-foreground">
-                    Base do Percentual
+                    Tipos Visíveis
                   </div>
                   <div className="mt-2 text-lg font-semibold text-foreground">
-                    {formatCurrency(basePercentualTotal)}
+                    {deducoesAgrupadas.length}
                   </div>
                 </div>
                 <div className="rounded-xl border border-glass-border/70 bg-secondary/25 px-4 py-3">
                   <div className="text-[11px] uppercase tracking-[0.24em] text-muted-foreground">
-                    Percentual Total
+                    Lançamentos
                   </div>
                   <div className="mt-2 text-lg font-semibold text-foreground">
-                    {basePercentualTotal > 0
-                      ? formatPercent((totalDeducoes / basePercentualTotal) * 100)
-                      : "0,00%"}
+                    {deducoes.length}
                   </div>
                 </div>
               </div>
 
               <div className="space-y-3">
-                {deducoes.map((deducao, index) => {
-                  const distribuicao = distribuirRetencaoPorNotas(notasFiscais, deducao.valor);
-                  const basePercentual = obterBasePercentual(deducao, resumo.bruto, distribuicao.brutoNotas);
-                  const percentualAplicado = basePercentual > 0 ? deducao.valor / basePercentual : 0;
-                  const percentualSobreBruto = resumo.bruto > 0 ? deducao.valor / resumo.bruto : percentualAplicado;
-                  const aberto = expandedDeducoes.includes(deducao.id);
-                  const totalManual = distribuicao.itens.reduce((acc, { nota, retencao }) => {
-                    const key = `${deducao.id}-${nota.id}`;
-                    const override = retencoesEditadas[key];
-                    const valor = override !== undefined ? parseEditableCurrency(override) ?? retencao : retencao;
-                    return acc + valor;
-                  }, 0);
+                {deducoesAgrupadas.map((grupo, index) => {
+                  const deducaoPrincipal = grupo.itens[0];
+                  const aberto = expandedDeducoes.includes(index + 1);
+                  const grupoSiafi = String(deducaoPrincipal?.siafi || "").toUpperCase();
+                  const grupoIsISS = grupoSiafi === "DDR001" || grupoSiafi === "DOB001";
+                  // Para ISS o "lançamento" é por NF vinculada; para demais é por entrada no PDF
+                  const nfsVinculadasGrupo = grupoIsISS
+                    ? grupo.itens.reduce((acc, i) => acc + (i.notasFiscaisVinculadas?.length ?? 0), 0)
+                    : 0;
+                  const qtd = grupoIsISS
+                    ? (nfsVinculadasGrupo > 0 ? nfsVinculadasGrupo : grupo.quantidade)
+                    : grupo.quantidade;
+                  const quantidadeLabel = `${qtd} lançamento${qtd !== 1 ? "s" : ""}`;
 
                   return (
                     <Collapsible
-                      key={deducao.id}
+                      key={grupo.id}
                       open={aberto}
-                      onOpenChange={() => alternarDeducao(deducao.id)}
+                      onOpenChange={() => alternarDeducao(index + 1)}
                     >
                       <div className="overflow-hidden rounded-2xl border border-glass-border/70 bg-secondary/20">
                         <CollapsibleTrigger asChild>
-                          <button className="flex w-full items-center gap-4 px-4 py-4 text-left transition-colors hover:bg-secondary/30">
-                            <div className="flex w-10 items-center justify-center text-muted-foreground">
+                          <button className="flex w-full items-center gap-3 px-4 py-3.5 text-left transition-colors hover:bg-secondary/30">
+                            <div className="flex w-6 shrink-0 items-center justify-center text-muted-foreground">
                               {aberto ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
                             </div>
                             <div className="min-w-0 flex-1">
-                              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                                <div>
-                                  <div className="text-sm font-semibold text-foreground">
-                                    {index + 1}. {deducao.tipo} · {deducao.siafi}
-                                  </div>
-                                  <div className="mt-1 text-sm text-muted-foreground">
-                                    Código {deducao.codigo || "—"} · {distribuicao.itens.length} NF(s) no rateio
-                                  </div>
-                                </div>
-                                <div className="grid gap-3 text-sm md:grid-cols-3 md:text-right">
-                                  <div>
-                                    <div className="text-[11px] uppercase tracking-[0.2em] text-muted-foreground">
-                                      Valor da Dedução
-                                    </div>
-                                    <div className="font-semibold text-foreground">{formatCurrency(deducao.valor)}</div>
-                                  </div>
-                                  <div>
-                                    <div className="text-[11px] uppercase tracking-[0.2em] text-muted-foreground">
-                                      Percentual Aplicado
-                                    </div>
-                                    <div className="font-semibold text-foreground">
-                                      {formatPercent(percentualSobreBruto * 100)}
-                                    </div>
-                                  </div>
-                                  <div>
-                                    <div className="text-[11px] uppercase tracking-[0.2em] text-muted-foreground">
-                                      Total Manual
-                                    </div>
-                                    <div className="font-semibold text-foreground">
-                                      {formatCurrency(totalManual)}
-                                    </div>
-                                  </div>
-                                </div>
+                              {/* Linha 1: título + badges */}
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="text-sm font-semibold text-foreground">
+                                  {index + 1}. {grupo.titulo}
+                                </span>
+                                {Array.from(grupo.codigos).length > 0 && (
+                                  <span className="rounded-md bg-secondary/60 px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">
+                                    Cód. {Array.from(grupo.codigos).join(", ")}
+                                  </span>
+                                )}
+                                {(() => {
+                                  const temErro = grupo.itens.some((i) => i.status === "erro");
+                                  const emExec = grupo.itens.some((i) => i.status === "executando");
+                                  const concluido = grupo.itens.every((i) => i.status === "concluido");
+                                  return (
+                                    <span className={`rounded-md px-1.5 py-0.5 text-[11px] font-medium ${
+                                      temErro   ? "bg-red-100 text-red-700"
+                                      : emExec  ? "bg-blue-100 text-blue-700"
+                                      : concluido ? "bg-green-100 text-green-700"
+                                      : "bg-secondary/60 text-muted-foreground"
+                                    }`}>
+                                      {temErro ? "Erro" : emExec ? "Executando" : concluido ? "Concluído" : "Aguardando"}
+                                    </span>
+                                  );
+                                })()}
+                              </div>
+                              {/* Linha 2: valores */}
+                              <div className="mt-1.5 flex flex-wrap items-center gap-x-4 gap-y-0.5 text-xs text-muted-foreground">
+                                <span>
+                                  <span className="uppercase tracking-wide">Base </span>
+                                  <span className="font-medium text-foreground">{formatCurrency(deducaoPrincipal?.baseCalculo ?? 0)}</span>
+                                </span>
+                                <span>
+                                  <span className="uppercase tracking-wide">Recolhido </span>
+                                  <span className="font-semibold text-foreground">{formatCurrency(grupo.valor)}</span>
+                                </span>
+                                <span>{quantidadeLabel}</span>
                               </div>
                             </div>
                           </button>
                         </CollapsibleTrigger>
 
                         <CollapsibleContent>
-                          <div className="border-t border-glass-border/70 px-4 py-4 space-y-4">
-                            {/* ── Datas por dedução ── */}
-                            {(() => {
-                              const calc = deducao.datasCalculadas;
-                              const isDDF025 = deducao.siafi === "DDF025";
+                          <div className="border-t border-glass-border/70">
+                            {grupo.itens.map((item, itemIndex) => {
+                              const inputKey = `${grupo.id}-${item.id}`;
+                              const siafi = String(item.siafi || "").toUpperCase();
+
+                              // ISS municipal (subset sum)
+                              const isISS = siafi === "DDR001" || siafi === "DOB001";
+                              // Retenção federal proporcional
+                              const isProporcional = siafi === "DDF025" || siafi === "DDF021";
+
+                              // ── Distribuição proporcional (DDF025 / DDF021) ──────────────────
+                              const distribuicao = isProporcional && notasFiscais.length > 0
+                                ? distribuirRetencaoPorNotas(notasFiscais, item.valor)
+                                : null;
+
+                              const totalProporcionalEditado = isProporcional && distribuicao
+                                ? distribuicao.itens.reduce((acc, { nota, retencao }) => {
+                                    const k = `${inputKey}-nf${nota.id}`;
+                                    return acc + (parseEditableCurrency(retencoesEditadas[k] ?? formatEditableCurrency(retencao)) ?? retencao);
+                                  }, 0)
+                                : null;
+
+                              // ── ISS por NF vinculada (DDR001 / DOB001) ───────────────────────
+                              // Usa notasFiscais (lista principal) como fonte de valor correto;
+                              // nfsVinculadas apenas identifica quais NFs pertencem a este município.
+                              const nfsVinculadasRaw = item.notasFiscaisVinculadas ?? [];
+                              const issItens = nfsVinculadasRaw.map((nfVinc) => {
+                                // Prefere o valor da lista principal (garantidamente em R$)
+                                const notaCompleta = notasFiscais.find(
+                                  (n) => n.id === nfVinc.id || n.nota === nfVinc.nota
+                                );
+                                return { nf: nfVinc, valorNf: notaCompleta?.valor ?? nfVinc.valor };
+                              });
+
+                              const somaIssBase = issItens.reduce((s, x) => s + x.valorNf, 0);
+                              const issItensComRetencao = issItens.map(({ nf, valorNf }) => ({
+                                nf,
+                                valorNf,
+                                retencaoInicial: somaIssBase > 0
+                                  ? Number((item.valor * (valorNf / somaIssBase)).toFixed(2))
+                                  : 0,
+                              }));
+                              // Ajuste de centavos no último item
+                              if (issItensComRetencao.length > 0) {
+                                const soma = issItensComRetencao.reduce((s, x) => s + x.retencaoInicial, 0);
+                                const diff = Number((item.valor - soma).toFixed(2));
+                                if (diff !== 0) {
+                                  issItensComRetencao[issItensComRetencao.length - 1].retencaoInicial =
+                                    Number((issItensComRetencao[issItensComRetencao.length - 1].retencaoInicial + diff).toFixed(2));
+                                }
+                              }
+
+                              const totalIssEditado = isISS && issItensComRetencao.length > 0
+                                ? issItensComRetencao.reduce((acc, { nf, retencaoInicial }) => {
+                                    const k = `${inputKey}-nf${nf.id}`;
+                                    return acc + (parseEditableCurrency(retencoesEditadas[k] ?? formatEditableCurrency(retencaoInicial)) ?? retencaoInicial);
+                                  }, 0)
+                                : null;
+
+                              // ── Valor do campo "Recolhido" ────────────────────────────────────
+                              const temSubNFs =
+                                (isProporcional && distribuicao !== null) ||
+                                (isISS && issItensComRetencao.length > 0);
+
+                              const totalDerivado = isProporcional
+                                ? totalProporcionalEditado
+                                : totalIssEditado;
+
+                              const valorEditado = temSubNFs && totalDerivado !== null
+                                ? formatEditableCurrency(totalDerivado)
+                                : (retencoesEditadas[inputKey] ?? formatEditableCurrency(item.valor));
+
+                              // Para grupos com 1 lançamento, o cabeçalho já mostra código/base/valor.
+                              // Mostramos a linha interna só quando há >1 lançamento ou não há sub-NFs.
+                              const mostrarLinhaLancamento = grupo.itens.length > 1 || !temSubNFs;
+
+                              // Label da seção de sub-NFs
+                              const labelSubNFs = isISS ? "ISS por nota fiscal" : "Retenção por nota fiscal";
+
+                              // Sub-NFs a renderizar
+                              const subNFsItems = isProporcional && distribuicao
+                                ? distribuicao.itens.map(({ nota, retencao }) => ({
+                                    id: nota.id,
+                                    label: `NF ${nota.nota || `#${nota.id}`}`,
+                                    valorNf: nota.valor,
+                                    retencaoInicial: retencao,
+                                  }))
+                                : issItensComRetencao.map(({ nf, valorNf, retencaoInicial }) => ({
+                                    id: nf.id,
+                                    label: `NF ${nf.nota || `#${nf.id}`}`,
+                                    valorNf,
+                                    retencaoInicial,
+                                  }));
+
                               return (
-                                <div className="rounded-xl border border-sky-500/20 bg-sky-500/5 px-4 py-3">
-                                  <div className="mb-3 flex items-center gap-2">
-                                    <CalendarDays className="h-3.5 w-3.5 text-sky-600" />
-                                    <span className="text-xs font-semibold uppercase tracking-[0.18em] text-sky-700">
-                                      Datas desta dedução
-                                    </span>
-                                    {isDDF025 && (
-                                      <span className="ml-1 rounded-md bg-sky-100 px-2 py-0.5 text-[10px] font-medium text-sky-700">
-                                        usa datas globais
-                                      </span>
-                                    )}
-                                  </div>
-                                  <div className="grid gap-3 sm:grid-cols-2">
-                                    {(["apuracao", "vencimento"] as const).map((campo) => {
-                                      const label = campo === "apuracao" ? "Data de Apuração" : "Data de Vencimento";
-                                      // Prioridade: override manual > data calculada específica > data global
-                                      const calculada = calc?.[campo] || "";
-                                      const global = dates?.[campo] || "";
-                                      const defaultVal = calculada || global;
-                                      const override = datasDeducoes[deducao.id]?.[campo] ?? "";
-                                      return (
-                                        <div key={campo}>
-                                          <label className="mb-1.5 block text-xs font-medium text-muted-foreground">
-                                            {label}
-                                            {!override && defaultVal && (
-                                              <span className="ml-1.5 text-sky-600">
-                                                ({calculada ? "calculada" : "global"}: {defaultVal})
-                                              </span>
-                                            )}
-                                          </label>
-                                          <input
-                                            type="text"
-                                            inputMode="numeric"
-                                            placeholder={defaultVal || "DD/MM/AAAA"}
-                                            value={override}
-                                            onChange={(e) => {
-                                              const novasDatas: DatasDeducao = {
-                                                apuracao: datasDeducoes[deducao.id]?.apuracao ?? "",
-                                                vencimento: datasDeducoes[deducao.id]?.vencimento ?? "",
-                                                [campo]: e.target.value,
-                                              };
-                                              onDatasDeducaoChange?.(deducao.id, novasDatas);
-                                            }}
-                                            className="w-full rounded-xl border border-glass-border bg-background/80 px-3 py-2 text-sm text-foreground outline-none transition focus:border-sky-400 focus:ring-2 focus:ring-sky-400/20"
-                                          />
-                                        </div>
-                                      );
-                                    })}
-                                  </div>
-                                  <p className="mt-2 text-xs text-muted-foreground">
-                                    {isDDF025
-                                      ? "DDF025 usa as datas globais do documento. Altere acima para sobrepor."
-                                      : "Datas calculadas automaticamente. Altere apenas se necessário."}
-                                  </p>
-                                </div>
-                              );
-                            })()}
+                                <div key={inputKey} className={itemIndex > 0 ? "border-t border-glass-border/50" : ""}>
 
-                            {/* ── Rateio de retenções ── */}
-                            <div>
-                            <div className="mb-3 flex flex-wrap gap-3 text-xs text-muted-foreground">
-                              <span>Rateio manual proporcional às NFs exibidas.</span>
-                              <span>Base do percentual: {formatCurrency(basePercentual)}</span>
-                              <span>Base do rateio visual: {formatCurrency(distribuicao.brutoNotas)}</span>
-                              <span>% sobre o bruto: {formatPercent(percentualSobreBruto * 100)}</span>
-                            </div>
-
-                            <GlassTable
-                              headers={["NF", "Tipo", "Emissão", "Valor da NF", "Percentual", "Valor da Retenção"]}
-                              className="rounded-xl border border-glass-border/50"
-                            >
-                              {distribuicao.itens.map(({ nota, percentual, retencao }) => {
-                                const key = `${deducao.id}-${nota.id}`;
-                                const valorEditado = retencoesEditadas[key] ?? formatEditableCurrency(retencao);
-
-                                return (
-                                  <GlassTableRow key={key}>
-                                    <GlassTableCell className="font-medium">{nota.nota}</GlassTableCell>
-                                    <GlassTableCell>{nota.tipo}</GlassTableCell>
-                                    <GlassTableCell>{nota.emissao}</GlassTableCell>
-                                    <GlassTableCell>{formatCurrency(nota.valor)}</GlassTableCell>
-                                    <GlassTableCell>{formatPercent(percentual * 100)}</GlassTableCell>
-                                    <GlassTableCell className="font-semibold text-foreground">
-                                      <div className="flex items-center justify-end gap-2">
-                                        <span className="text-xs font-normal text-muted-foreground">R$</span>
+                                  {/* Linha do lançamento — só aparece quando necessário */}
+                                  {mostrarLinhaLancamento && (
+                                    <div className="flex items-center gap-3 px-4 py-3">
+                                      {grupo.itens.length > 1 && (
+                                        <p className="text-xs font-medium text-muted-foreground shrink-0">
+                                          Lançamento {itemIndex + 1}
+                                        </p>
+                                      )}
+                                      {/* Base editável */}
+                                      <div className="flex shrink-0 items-center gap-1.5">
+                                        <span className="text-[11px] uppercase tracking-wide text-muted-foreground">Base</span>
+                                        <span className="text-xs text-muted-foreground">R$</span>
                                         <input
-                                          value={valorEditado}
-                                          onChange={(event) => atualizarRetencao(key, event.target.value)}
-                                          onBlur={() => normalizarRetencao(key, retencao)}
-                                          className="w-24 rounded-md border border-glass-border bg-background/70 px-2 py-1 text-right text-sm font-semibold text-foreground outline-none transition focus:border-primary"
+                                          value={basesEditadas[inputKey] ?? formatEditableCurrency(item.baseCalculo || 0)}
+                                          onChange={(e) => atualizarBase(inputKey, e.target.value)}
+                                          onBlur={() => normalizarBase(inputKey, item.baseCalculo || 0)}
+                                          className="h-8 w-[110px] rounded-lg border border-glass-border bg-background px-2.5 text-sm font-medium text-foreground text-right outline-none transition focus:border-primary"
                                           inputMode="decimal"
-                                          aria-label={`Valor da retenção da NF ${nota.nota}`}
+                                          aria-label={`Base de cálculo do lançamento ${itemIndex + 1}`}
                                         />
                                       </div>
-                                    </GlassTableCell>
-                                  </GlassTableRow>
-                                );
-                              })}
-                            </GlassTable>
-                            </div>{/* fim rateio */}
+                                      {/* Recolhido */}
+                                      <div className="flex shrink-0 items-center gap-1.5 ml-auto">
+                                        <span className="text-[11px] uppercase tracking-wide text-muted-foreground">Recolhido</span>
+                                        <span className="text-xs text-muted-foreground">R$</span>
+                                        {temSubNFs ? (
+                                          <div className="flex h-8 w-[110px] items-center justify-end rounded-lg border border-glass-border/50 bg-secondary/30 px-2.5">
+                                            <span className="text-sm font-semibold text-foreground tabular-nums">
+                                              {formatEditableCurrency(totalDerivado ?? item.valor)}
+                                            </span>
+                                          </div>
+                                        ) : (
+                                          <input
+                                            value={valorEditado}
+                                            onChange={(e) => atualizarRetencao(inputKey, e.target.value)}
+                                            onBlur={() => normalizarRetencao(inputKey, item.valor)}
+                                            className="h-8 w-[110px] rounded-lg border border-glass-border bg-background px-2.5 text-sm font-semibold text-foreground text-right outline-none transition focus:border-primary"
+                                            inputMode="decimal"
+                                            aria-label={`Valor recolhido do lançamento ${itemIndex + 1}`}
+                                          />
+                                        )}
+                                      </div>
+                                    </div>
+                                  )}
+
+                                  {/* Sub-NFs: ISS por NF ou retenção proporcional */}
+                                  {temSubNFs && subNFsItems.length > 0 && (
+                                    <div className={`px-4 pb-3 pt-2 space-y-1.5 ${mostrarLinhaLancamento ? "border-t border-glass-border/40" : ""}`}>
+                                      <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground mb-2">
+                                        {labelSubNFs}
+                                      </p>
+                                      {subNFsItems.map(({ id, label, valorNf, retencaoInicial }) => {
+                                        const nfKey = `${inputKey}-nf${id}`;
+                                        const nfValorEditado = retencoesEditadas[nfKey] ?? formatEditableCurrency(retencaoInicial);
+                                        const nfValorParsed = parseEditableCurrency(nfValorEditado) ?? retencaoInicial;
+                                        const percentualNf = valorNf > 0 ? (nfValorParsed / valorNf) * 100 : 0;
+                                        return (
+                                          <div key={id} className="flex items-center gap-2 rounded-lg border border-glass-border/50 bg-background/40 px-3 py-2">
+                                            {/* Badge NF */}
+                                            <span className="shrink-0 rounded-md bg-secondary/60 px-2 py-0.5 text-[11px] font-semibold text-foreground">
+                                              {label}
+                                            </span>
+                                            {/* Valor base da NF */}
+                                            <span className="flex-1 text-xs tabular-nums text-muted-foreground">
+                                              {formatCurrency(valorNf)}
+                                            </span>
+                                            {/* Percentual como badge sutil */}
+                                            <span className="shrink-0 rounded-full bg-secondary/50 px-2 py-0.5 text-[11px] tabular-nums text-muted-foreground">
+                                              {formatPercent(percentualNf)}
+                                            </span>
+                                            {/* Input de retenção */}
+                                            <input
+                                              value={nfValorEditado}
+                                              onChange={(e) => atualizarRetencao(nfKey, e.target.value)}
+                                              onBlur={() => normalizarRetencao(nfKey, retencaoInicial)}
+                                              className="h-7 w-[88px] shrink-0 rounded-md border border-glass-border bg-background px-2 text-right text-sm font-semibold text-foreground outline-none transition focus:border-primary"
+                                              inputMode="decimal"
+                                              aria-label={`${labelSubNFs} — ${label}`}
+                                            />
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  )}
+
+                                  {/* ISS sem NFs vinculadas: input direto */}
+                                  {isISS && issItensComRetencao.length === 0 && (
+                                    <div className="flex items-center gap-3 px-4 py-3">
+                                      <p className="flex-1 text-xs text-muted-foreground">
+                                        Não foi possível identificar as notas pela base de cálculo — informe manualmente.
+                                      </p>
+                                      <div className="flex shrink-0 items-center gap-1.5">
+                                        <span className="text-xs text-muted-foreground">R$</span>
+                                        <input
+                                          value={retencoesEditadas[inputKey] ?? formatEditableCurrency(item.valor)}
+                                          onChange={(e) => atualizarRetencao(inputKey, e.target.value)}
+                                          onBlur={() => normalizarRetencao(inputKey, item.valor)}
+                                          className="h-8 w-[110px] rounded-lg border border-glass-border bg-background px-2.5 text-sm font-semibold text-foreground text-right outline-none transition focus:border-primary"
+                                          inputMode="decimal"
+                                        />
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
                           </div>
                         </CollapsibleContent>
                       </div>
@@ -616,7 +757,7 @@ export function NotasFiscaisTable({
             </div>
           ) : (
             <div className="flex h-32 items-center justify-center text-muted-foreground">
-              Nenhuma dedução cadastrada
+              Nenhuma dedução disponível para exibir
             </div>
           )
         )}

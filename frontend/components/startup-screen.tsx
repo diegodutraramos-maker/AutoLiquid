@@ -19,7 +19,6 @@ interface StartupScreenProps {
   progress: number;
   title: string;
   detail: string;
-  attempt?: number;
   error?: string;
   onRetry?: () => void;
 }
@@ -97,7 +96,6 @@ export function StartupScreen({
   progress,
   title,
   detail,
-  attempt = 0,
   error,
   onRetry,
 }: StartupScreenProps) {
@@ -125,7 +123,7 @@ export function StartupScreen({
               </div>
               <div className="min-w-0">
                 <p className="text-xs font-semibold uppercase tracking-[0.22em] text-sky-700/80">
-                  AutoLiquid
+                  Ambiente local
                 </p>
                 <h1 className="mt-2 text-2xl font-semibold tracking-tight text-foreground sm:text-3xl">
                   {title}
@@ -156,38 +154,33 @@ export function StartupScreen({
                 <Server className="h-4 w-4" />
                 <span>
                   {phase === "starting-api"
-                    ? "Inicializando a API local"
+                    ? "Conectando os serviços internos"
                     : phase === "restoring-data"
-                      ? "Restaurando dados salvos"
+                      ? "Recuperando dados iniciais"
                       : phase === "ready"
-                        ? "Tudo pronto para uso"
+                        ? "Tudo pronto para começar"
                         : phase === "error"
                           ? "Abertura interrompida"
-                          : "Preparando interface"}
+                          : "Preparando o painel inicial"}
                 </span>
               </div>
-              {attempt > 0 && phase === "starting-api" && (
-                <span className="rounded-full border border-sky-500/20 bg-sky-500/10 px-3 py-1 text-xs font-medium text-sky-700">
-                  tentativa {attempt}
-                </span>
-              )}
             </div>
           </div>
 
           <div className="grid gap-3 sm:grid-cols-3">
             <StepIndicator
-              label="Interface"
-              description="Carregando a camada visual do app"
+              label="Painel"
+              description="Montando a interface inicial"
               status={steps[0]}
             />
             <StepIndicator
-              label="API interna"
-              description="Aguardando o backend responder em 127.0.0.1:8000"
+              label="Serviços"
+              description="Ligando a API local do AutoLiquid"
               status={steps[1]}
             />
             <StepIndicator
-              label="Dados iniciais"
-              description="Recuperando datas e preparando a tela inicial"
+              label="Contexto"
+              description="Carregando datas e preferências salvas"
               status={steps[2]}
             />
           </div>
@@ -208,8 +201,7 @@ export function StartupScreen({
 
           <div className="mt-6 flex flex-wrap items-center justify-between gap-3">
             <p className="max-w-xl text-sm text-muted-foreground">
-              A tela principal so sera exibida quando a API terminar de iniciar e os dados
-              minimos estiverem prontos.
+              A tela principal será exibida assim que os serviços locais estiverem prontos.
             </p>
 
             {error && onRetry ? (

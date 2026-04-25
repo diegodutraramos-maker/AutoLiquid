@@ -7,7 +7,7 @@ from decimal import Decimal, InvalidOperation
 import re
 import time
 
-from comprasnet_base import (
+from comprasnet.base import (
     conectar,
     preencher_data,
     preencher_texto,
@@ -561,7 +561,7 @@ def executar(dados_extraidos, data_vencimento_usuario, *, pagina=None, playwrigh
     # ── Ajuste automático da data de vencimento ───────────────────────────────
     # Garante que a data não caia em feriado ou fim de semana (Florianópolis).
     try:
-        from datas_impostos import ajustar_data_util
+        from core.datas_impostos import ajustar_data_util
         data_ajustada, foi_ajustada = ajustar_data_util(data_vencimento_usuario)
         if foi_ajustada:
             print(f"  ⚠ Vencimento ajustado: {data_vencimento_usuario} → {data_ajustada} (era feriado/fim de semana)")

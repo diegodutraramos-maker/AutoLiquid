@@ -35,7 +35,7 @@ except ImportError:
 
 # Importar funções da base do comprasnet
 try:
-    from comprasnet_base import conectar
+    from comprasnet.base import conectar
 except ImportError:
     def conectar(porta=None, abrir_se_fechado=True):
         p = sync_playwright().start()

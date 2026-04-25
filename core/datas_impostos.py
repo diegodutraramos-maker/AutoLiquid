@@ -14,6 +14,8 @@ import logging
 
 from services.config_service import carregar_tabelas_config
 
+log = logging.getLogger(__name__)
+
 
 def _carregar_overrides_dia() -> dict:
     """
@@ -26,8 +28,37 @@ def _carregar_overrides_dia() -> dict:
         # Garante que os valores são int
         return {str(k): int(v) for k, v in overrides.items() if v}
     except Exception:
-        logging.warning("datas_impostos: falha ao carregar overrides de dia.")
+        log.warning("datas_impostos: falha ao carregar overrides de dia.")
         return {}
+
+
+def _carregar_regras_remotas() -> list[dict[str, str]] | None:
+    try:
+        from services.postgres_service import obter_tabela_operacional, postgres_habilitado
+
+        if not postgres_habilitado():
+            return None
+
+        rows = obter_tabela_operacional("datas-impostos")
+        if rows is None:
+            return None
+
+        regras: list[dict[str, str]] = []
+        for row in rows:
+            regra = {
+                "imposto": str((row or {}).get("imposto", "")).strip(),
+                "codigo": str((row or {}).get("codigo", "")).strip(),
+                "siafi": str((row or {}).get("siafi", "")).strip().upper(),
+                "dia": str((row or {}).get("dia", "")).strip(),
+                "apuracao": str((row or {}).get("apuracao", "")).strip(),
+                "lf": _texto_bool((row or {}).get("lf", "")),
+            }
+            if any(regra.values()):
+                regras.append(regra)
+        return regras
+    except Exception as exc:
+        log.warning("datas_impostos: falha ao carregar regras remotas: %s", exc)
+        return None
 
 # ─────────────────────────────────────────────────────────────────────────────
 # FERIADOS
@@ -141,6 +172,7 @@ CODIGO_SIAFI = {
     "8093": "DOB001",   # ISS Curitibanos
     "8027": "DOB001",   # ISS Araranguá
     "5549": "DOB001",   # ISS Barra do Sul
+    "8465": "DOB001",   # ISS Gov. Celso Ramos
 }
 
 # DOB001 que precisam de LF preenchida pelo usuário (Joinville é exceção — não precisa)
@@ -165,6 +197,7 @@ DESCRICAO_CODIGO = {
     "8093": "ISS Curitibanos",
     "8027": "ISS Araranguá",
     "5549": "ISS Barra do Sul",
+    "8465": "ISS Gov. Celso Ramos",
 }
 
 # Regra de vencimento (texto legível para tabela genérica)
@@ -186,6 +219,7 @@ REGRA_VENCIMENTO = {
     "8093": "Dia 20 do mês posterior — dia útil Fpolis",
     "8027": "Dia 20 do mês posterior — dia útil Fpolis",
     "5549": "Dia 10 do mês posterior — dia útil Fpolis",
+    "8465": "Dia 20 do mesmo mês da NF — dia útil",
 }
 
 REGRA_APURACAO = {
@@ -206,6 +240,7 @@ REGRA_APURACAO = {
     "8093": "Data de emissão mais antiga das NFs",
     "8027": "Data de emissão mais antiga das NFs",
     "5549": "Data de emissão mais antiga das NFs",
+    "8465": "Data de emissão mais antiga das NFs",
 }
 
 # Tabela genérica completa para exibição no DialogoTabelas
@@ -228,6 +263,7 @@ TABELA_GENERICA = [
     ("ISS Curitibanos",  "8093", "DOB001", "Dia 20 mês posterior — dia útil Fpolis", "Emissão mais antiga das NFs", "Sim"),
     ("ISS Araranguá",    "8027", "DOB001", "Dia 20 mês posterior — dia útil Fpolis", "Emissão mais antiga das NFs", "Sim"),
     ("ISS Barra do Sul", "5549", "DOB001", "Dia 10 mês posterior — dia útil Fpolis", "Emissão mais antiga das NFs", "Sim"),
+    ("ISS Gov. Celso Ramos", "8465", "DOB001", "Dia 20 do mesmo mês — dia útil", "Emissão mais antiga das NFs", "Sim"),
 ]
 
 
@@ -264,6 +300,10 @@ def obter_regras_datas_impostos() -> list[dict[str, str]]:
     Retorna as regras efetivas de datas, unificando defaults, overrides antigos
     e regras completas salvas pela interface web.
     """
+    regras_remotas = _carregar_regras_remotas()
+    if regras_remotas:
+        return regras_remotas
+
     config = carregar_tabelas_config()
     regras_salvas = config.get("datas_impostos_regras", [])
 
@@ -321,6 +361,13 @@ def _mes_posterior_dia(data_ref: date, dia: int) -> date:
     ultimo = calendar.monthrange(ano, mes)[1]
     dia    = min(dia, ultimo)
     return date(ano, mes, dia)
+
+
+def _mes_atual_dia(data_ref: date, dia: int) -> date:
+    """Retorna o 'dia' do mesmo mês de data_ref."""
+    import calendar
+    ultimo = calendar.monthrange(data_ref.year, data_ref.month)[1]
+    return date(data_ref.year, data_ref.month, min(dia, ultimo))
 
 
 def _parse_data(s: str):
@@ -418,7 +465,10 @@ def calcular_datas(
 
     apuracao_date = data_ref
     dia = int(dia_regra) if dia_regra.isdigit() else _dia_vencimento(codigo, overrides_dia)
-    alvo          = _mes_posterior_dia(data_ref, dia)
+    if codigo == "8465":
+        alvo = _mes_atual_dia(data_ref, 20)
+    else:
+        alvo = _mes_posterior_dia(data_ref, dia)
     vencimento_date = dia_util_anterior_ou_igual(alvo)
 
     return {

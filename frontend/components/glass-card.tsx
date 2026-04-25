@@ -121,11 +121,14 @@ export function GlassButton({
 
 interface GlassTableProps {
   headers: string[];
+  headerTitles?: string[];
   children: ReactNode;
   className?: string;
+  compact?: boolean;
 }
 
-export function GlassTable({ headers, children, className }: GlassTableProps) {
+export function GlassTable({ headers, headerTitles, children, className, compact }: GlassTableProps) {
+  const thPad = compact ? "px-2 py-2" : "px-4 py-3";
   return (
     <div className={cn("overflow-x-auto", className)}>
       <table className="w-full">
@@ -134,7 +137,8 @@ export function GlassTable({ headers, children, className }: GlassTableProps) {
             {headers.map((header, index) => (
               <th
                 key={index}
-                className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground"
+                title={headerTitles?.[index]}
+                className={cn(thPad, "text-left text-xs font-medium uppercase tracking-wider text-muted-foreground", headerTitles?.[index] ? "cursor-default" : "")}
               >
                 {header}
               </th>
@@ -155,9 +159,9 @@ export function GlassTableRow({ children, className }: { children: ReactNode; cl
   );
 }
 
-export function GlassTableCell({ children, className }: { children: ReactNode; className?: string }) {
+export function GlassTableCell({ children, className, compact }: { children: ReactNode; className?: string; compact?: boolean }) {
   return (
-    <td className={cn("px-4 py-3 text-sm text-foreground", className)}>
+    <td className={cn(compact ? "px-2 py-2" : "px-4 py-3", "text-sm text-foreground", className)}>
       {children}
     </td>
   );

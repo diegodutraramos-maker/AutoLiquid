@@ -156,3 +156,27 @@
     min-height: 100vh;
   }
 }
+
+@layer components {
+  .react-flow__attribution {
+    display: none;
+  }
+
+  .react-flow__controls,
+  .react-flow__minimap {
+    border: 1px solid color-mix(in oklch, var(--border) 80%, white);
+    background: color-mix(in oklch, var(--card) 88%, white);
+    box-shadow: 0 18px 38px -30px rgba(15, 23, 42, 0.35);
+    backdrop-filter: blur(20px);
+  }
+
+  .react-flow__controls-button {
+    background: transparent;
+    color: var(--foreground);
+    border-bottom-color: color-mix(in oklch, var(--border) 80%, white);
+  }
+
+  .react-flow__controls-button:hover {
+    background: color-mix(in oklch, var(--secondary) 70%, white);
+  }
+}

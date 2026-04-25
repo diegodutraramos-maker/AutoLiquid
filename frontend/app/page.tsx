@@ -1,15 +1,15 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowDownToLine, FileUp, Loader2, X } from "lucide-react";
 import { Header } from "@/components/header";
-import { StartupScreen } from "@/components/startup-screen";
 import { DateFields } from "@/components/date-fields";
 import { UploadZone } from "@/components/upload-zone";
 import { TabelasModal } from "@/components/tabelas-modal";
 import { ConfiguracoesModal } from "@/components/configuracoes-modal";
 import { GlassButton } from "@/components/glass-card";
+import { CnpjChecker, NfeConsulta, IssPortais } from "@/components/liquidacao";
 import {
   abrirUrl,
   delay,
@@ -21,6 +21,7 @@ import {
   fetchAppSettings,
   fetchProcessDates,
   openChromeSession,
+  saveProcessDates,
   waitForBackendReady,
   verificarAtualizacao,
   type TableKey,
@@ -48,8 +49,12 @@ const DASHBOARD_LABELS = {
   "este-mes": "Este mês",
 } as const;
 
+type MainTab = "liquidacao" | "registro";
+
+
 export default function HomePage() {
   const router = useRouter();
+  const [activeMainTab, setActiveMainTab] = useState<MainTab>("liquidacao");
   const [dates, setDates] = useState<ProcessDates>(MOCK_PROCESS_DATES);
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isUploading, setIsUploading] = useState(false);
@@ -67,15 +72,27 @@ export default function HomePage() {
   const [startupState, setStartupState] =
     useState<BackendStartupProgress>(INITIAL_STARTUP_STATE);
   const [startupError, setStartupError] = useState("");
-  const [startupConcluido, setStartupConcluido] = useState(false);
+  // Persiste o startup entre navegações dentro da mesma sessão do app
+  const [startupConcluido, setStartupConcluido] = useState(() => {
+    try { return sessionStorage.getItem("startup_ok") === "1"; } catch { return false; }
+  });
   const [startupRunId, setStartupRunId] = useState(0);
   const [dashboardPeriodo, setDashboardPeriodo] =
     useState<keyof typeof DASHBOARD_LABELS>("semana");
   const [dashboard, setDashboard] = useState<DashboardInfo | null>(null);
   const [carregandoDashboard, setCarregandoDashboard] = useState(false);
+  const [uploadResetKey, setUploadResetKey] = useState(0);
+  const lastSavedDatesRef = useRef(JSON.stringify(MOCK_PROCESS_DATES));
 
   const formatCurrency = (value: number) =>
     new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(value);
+
+  const resetUploadArea = () => {
+    setSelectedFile(null);
+    setIsUploading(false);
+    setErro("");
+    setUploadResetKey((current) => current + 1);
+  };
 
   // Verificação de versão na inicialização (só quando API estiver disponível)
   useEffect(() => {
@@ -104,6 +121,23 @@ export default function HomePage() {
     let ultimoStartup = INITIAL_STARTUP_STATE;
 
     const carregarTela = async () => {
+      // Se o startup já foi concluído nesta sessão do app, faz apenas uma
+      // verificação rápida em background sem mostrar o banner de loading.
+      const jaFezStartup = (() => { try { return sessionStorage.getItem("startup_ok") === "1"; } catch { return false; } })();
+      if (jaFezStartup) {
+        try {
+          const backendStatus = await fetchBackendStatus();
+          if (!ativo) return;
+          setChromeStatus(backendStatus.chromeStatus);
+          setApiDisponivel(true);
+        } catch {
+          if (!ativo) return;
+          setChromeStatus("erro");
+          setApiDisponivel(false);
+        }
+        return;
+      }
+
       setStartupConcluido(false);
       setStartupError("");
       setErroInicializacao("");
@@ -116,8 +150,8 @@ export default function HomePage() {
 
       try {
         const backendStatus = await waitForBackendReady({
-          timeoutMs: 30000,
-          retryDelayMs: 650,
+          timeoutMs: 60000,
+          retryDelayMs: 1000,
           onProgress: (progress) => {
             if (!ativo) return;
             ultimoStartup = progress;
@@ -167,6 +201,7 @@ export default function HomePage() {
       if (datesResult.status === "fulfilled") {
         if (!ativo) return;
         setDates(datesResult.value);
+        lastSavedDatesRef.current = JSON.stringify(datesResult.value);
       } else {
         console.error("Erro ao carregar datas do processo:", datesResult.reason);
         if (ativo) {
@@ -194,6 +229,7 @@ export default function HomePage() {
       });
       await delay(320);
       if (!ativo) return;
+      try { sessionStorage.setItem("startup_ok", "1"); } catch { /* ignore */ }
       setStartupConcluido(true);
     };
 
@@ -203,6 +239,30 @@ export default function HomePage() {
       ativo = false;
     };
   }, [startupRunId]);
+
+  useEffect(() => {
+    if (!startupConcluido) {
+      return;
+    }
+
+    const serialized = JSON.stringify(dates);
+    if (serialized === lastSavedDatesRef.current) {
+      return;
+    }
+
+    const timeoutId = window.setTimeout(async () => {
+      try {
+        const saved = await saveProcessDates(dates);
+        lastSavedDatesRef.current = JSON.stringify(saved);
+      } catch (error) {
+        console.error("Erro ao salvar datas do processo:", error);
+      }
+    }, 350);
+
+    return () => {
+      window.clearTimeout(timeoutId);
+    };
+  }, [dates, startupConcluido]);
 
   useEffect(() => {
     if (startupConcluido || !startupError) {
@@ -256,13 +316,22 @@ export default function HomePage() {
     };
 
     const handleFocus = () => {
+      resetUploadArea();
+      window.scrollTo({ top: 0, behavior: "instant" as ScrollBehavior });
       void atualizarChrome();
     };
 
     const handleVisibility = () => {
       if (!document.hidden) {
+        resetUploadArea();
         void atualizarChrome();
       }
+    };
+
+    const handlePageShow = () => {
+      resetUploadArea();
+      window.scrollTo({ top: 0, behavior: "instant" as ScrollBehavior });
+      void atualizarChrome();
     };
 
     const intervalId = window.setInterval(() => {
@@ -270,12 +339,14 @@ export default function HomePage() {
     }, 5000);
 
     window.addEventListener("focus", handleFocus);
+    window.addEventListener("pageshow", handlePageShow);
     document.addEventListener("visibilitychange", handleVisibility);
 
     return () => {
       ativo = false;
       window.clearInterval(intervalId);
       window.removeEventListener("focus", handleFocus);
+      window.removeEventListener("pageshow", handlePageShow);
       document.removeEventListener("visibilitychange", handleVisibility);
     };
   }, [startupConcluido]);
@@ -308,21 +379,28 @@ export default function HomePage() {
     };
   }, [apiDisponivel, dashboardPeriodo, startupConcluido]);
 
-  const handleFileSelect = (file: File | null) => {
+  const handleFileSelect = (file: File | null, source: "drop" | "input" | "clear") => {
     setErro("");
     setSelectedFile(file);
+    if (file && source !== "clear") {
+      void handleProcessar(file);
+    }
   };
 
-  const handleProcessar = async () => {
-    if (!selectedFile) {
+  const handleProcessar = async (fileOverride?: File) => {
+    const arquivoParaProcessar = fileOverride ?? selectedFile;
+    if (!arquivoParaProcessar) {
       setErro("Selecione um PDF antes de processar.");
+      return;
+    }
+    if (isUploading) {
       return;
     }
 
     setIsUploading(true);
     setErro("");
     try {
-      const result = await uploadPDF(selectedFile, dates);
+      const result = await uploadPDF(arquivoParaProcessar, dates);
       if (result.success) {
         router.push(`/conferencia?id=${result.documentoId}`);
         return;
@@ -361,26 +439,6 @@ export default function HomePage() {
     }
   };
 
-  if (!startupConcluido) {
-    return (
-      <StartupScreen
-        phase={startupState.phase}
-        progress={startupState.progress}
-        title={startupState.title}
-        detail={startupState.detail}
-        attempt={startupState.attempt}
-        error={startupError}
-        onRetry={
-          startupError
-            ? () => {
-                setStartupRunId((current) => current + 1);
-              }
-            : undefined
-        }
-      />
-    );
-  }
-
   return (
     <div className="min-h-screen bg-background">
       {/* Background decoration */}
@@ -405,33 +463,39 @@ export default function HomePage() {
 
       <main className="relative mx-auto max-w-5xl px-5 py-6 sm:px-6 sm:py-8">
         <section className="mb-5 rounded-[28px] border border-glass-border bg-glass-bg px-5 py-5 shadow-[0_28px_80px_-48px_rgba(15,23,42,0.4)] backdrop-blur-xl sm:px-6">
-          <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+
+          {/* ── Cabeçalho + Abas ── */}
+          <div className="mb-5 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
             <div className="min-w-0">
-              <h1 className="text-balance text-2xl font-bold tracking-tight text-foreground sm:text-3xl">
-                Central de Liquidação
+              <p className="text-xs font-semibold uppercase tracking-[0.22em] text-primary/80">
+                AutoLiquid
+              </p>
+              <h1 className="mt-2 text-balance text-2xl font-bold tracking-tight text-foreground sm:text-3xl">
+                {activeMainTab === "liquidacao" ? "Liquidação" : "Registro"}
               </h1>
               <p className="mt-1 text-sm text-muted-foreground">
-                Datas, envio do PDF e visão operacional em um único painel.
+                {activeMainTab === "liquidacao"
+                  ? "Acesse os portais municipais e execute a liquidação no SIAFI."
+                  : "Envie o PDF da liquidação para extrair e conferir os dados antes de executar."}
               </p>
             </div>
 
-            <div className="grid gap-2 sm:grid-cols-2 lg:w-[420px]">
-              <div className="rounded-2xl border border-glass-border/70 bg-background/70 px-4 py-3">
-                <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                  Apuração
-                </p>
-                <p className="mt-1 text-base font-semibold text-foreground">
-                  {dates.apuracao || "Não informada"}
-                </p>
-              </div>
-              <div className="rounded-2xl border border-glass-border/70 bg-background/70 px-4 py-3">
-                <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                  Vencimento
-                </p>
-                <p className="mt-1 text-base font-semibold text-foreground">
-                  {dates.vencimento || "Não informado"}
-                </p>
-              </div>
+            {/* Seletor de abas */}
+            <div className="flex shrink-0 gap-1 rounded-xl border border-glass-border bg-background/60 p-1">
+              {(["liquidacao", "registro"] as MainTab[]).map((tab) => (
+                <button
+                  key={tab}
+                  type="button"
+                  onClick={() => setActiveMainTab(tab)}
+                  className={`rounded-lg px-4 py-1.5 text-sm font-medium transition-colors ${
+                    activeMainTab === tab
+                      ? "bg-primary text-primary-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {tab === "liquidacao" ? "Liquidação" : "Registro"}
+                </button>
+              ))}
             </div>
           </div>
 
@@ -470,12 +534,48 @@ export default function HomePage() {
             </div>
           )}
 
+          {!startupConcluido && (
+            <div className="mb-4 flex flex-col gap-3 rounded-2xl border border-glass-border/70 bg-background/60 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <p className="text-sm font-semibold text-foreground">{startupState.title}</p>
+                <p className="mt-1 text-sm text-muted-foreground">{startupState.detail}</p>
+              </div>
+              <div className="flex items-center gap-3">
+                <span className="rounded-full border border-glass-border bg-background/70 px-3 py-1 text-xs text-muted-foreground">
+                  {startupState.progress}%
+                </span>
+                {startupError ? (
+                  <GlassButton
+                    type="button"
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => setStartupRunId((current) => current + 1)}
+                  >
+                    Tentar novamente
+                  </GlassButton>
+                ) : null}
+              </div>
+            </div>
+          )}
+
+          {/* ── Aba: Liquidação ── */}
+          {activeMainTab === "liquidacao" && (
+            <div className="space-y-4">
+              <IssPortais />
+              <CnpjChecker />
+              <NfeConsulta />
+            </div>
+          )}
+
+          {/* ── Aba: Registro ── */}
+          {activeMainTab === "registro" && (
           <div className="grid gap-4 xl:grid-cols-[minmax(0,1.15fr)_minmax(340px,0.85fr)]">
             <div className="space-y-4">
               <DateFields dates={dates} onDatesChange={setDates} compact />
 
               <div className="rounded-3xl border border-glass-border bg-background/55 p-4 shadow-[0_18px_50px_-36px_rgba(15,23,42,0.4)]">
                 <UploadZone
+                  key={uploadResetKey}
                   onFileSelect={handleFileSelect}
                   compact
                   disabled={!apiDisponivel}
@@ -500,7 +600,7 @@ export default function HomePage() {
                   <GlassButton
                     variant="secondary"
                     size="lg"
-                    onClick={handleProcessar}
+                    onClick={() => handleProcessar()}
                     disabled={!selectedFile || isUploading || !apiDisponivel}
                     className="w-full sm:w-auto"
                   >
@@ -610,6 +710,7 @@ export default function HomePage() {
               </div>
             </div>
           </div>
+          )}
         </section>
       </main>
 

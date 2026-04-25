@@ -83,44 +83,97 @@ def _aguardar_tabela(pagina, timeout_ms: int = _TIMEOUT) -> None:
 
 def _clicar_todos_registros(pagina) -> None:
     """
-    Clica em 'Todos' no seletor de registros por página.
-    O botão fica no rodapé da tabela ou próximo à paginação.
+    Seleciona 'Todos' no seletor de registros por página (DataTables).
+
+    Estratégia em 3 tentativas progressivas:
+    1. select_option via seletor CSS de página (mais confiável, sem handle stale)
+    2. Clique direto na opção via JavaScript (para dropdowns custom)
+    3. Fallback: JS de força-bruta em todos os <select>
     """
-    log.info("Clicando em 'Todos' registros por página...")
-    # Nota: usamos string normal (não f-string) para evitar conflito de chaves JS
-    js = """
+    log.info("Selecionando 'Todos' registros por página...")
+
+    # Seletor exato confirmado pelo diagnóstico: name="crudTable_length", id=null, value="-1"
+    # O select NÃO tem id — apenas o atributo name é confiável.
+    SELETOR_EXATO = 'select[name="crudTable_length"]'
+
+    # -- Aguarda o controle de paginação estar presente na DOM --
+    SELETORES_ESPERA = [
+        SELETOR_EXATO,
+        "select[name$='_length']",
+        ".dataTables_length select",
+    ]
+    seletor_encontrado: str | None = None
+    for seletor in SELETORES_ESPERA:
+        try:
+            pagina.wait_for_selector(seletor, state="visible", timeout=6_000)
+            seletor_encontrado = seletor
+            log.info("Select de paginação encontrado via '%s'.", seletor)
+            break
+        except Exception:
+            continue
+
+    # -- Tentativa 1: select_option direto com o seletor exato (valor "-1" = Todos) --
+    if seletor_encontrado:
+        try:
+            pagina.select_option(seletor_encontrado, value="-1")
+            log.info("'Todos' selecionado (value='-1') via '%s'.", seletor_encontrado)
+            time.sleep(1.2)
+            _aguardar_tabela_estavel(pagina, timeout_ms=30_000)
+            return
+        except Exception:
+            pass
+        # Fallback pelo label caso o value seja diferente
+        try:
+            pagina.select_option(seletor_encontrado, label="Todos")
+            log.info("'Todos' selecionado pelo label via '%s'.", seletor_encontrado)
+            time.sleep(1.2)
+            _aguardar_tabela_estavel(pagina, timeout_ms=30_000)
+            return
+        except Exception:
+            pass
+
+    # -- Tentativa 2: JS direto — busca pelo name exato primeiro, depois varre todos --
+    log.info("Tentando JS fallback para selecionar 'Todos'...")
+    resultado = pagina.evaluate("""
         () => {
-            var elementos = Array.from(document.querySelectorAll('button, a, li, option, span'));
-            for (var i = 0; i < elementos.length; i++) {
-                var el = elementos[i];
-                var txt = (el.textContent || '').trim().toLowerCase();
-                if (txt === 'todos') {
-                    el.click();
-                    return true;
-                }
-            }
-            var selects = document.querySelectorAll('select');
-            for (var j = 0; j < selects.length; j++) {
-                var sel = selects[j];
-                for (var k = 0; k < sel.options.length; k++) {
-                    var opt = sel.options[k];
-                    var optTxt = (opt.text || '').trim().toLowerCase();
-                    if (optTxt === 'todos' || opt.value === '-1' || opt.value === '0') {
-                        sel.value = opt.value;
-                        sel.dispatchEvent(new Event('change', { bubbles: true }));
-                        return true;
+            // Prioriza o select com name="crudTable_length" (confirmado pelo diagnóstico)
+            var sel = document.querySelector('select[name="crudTable_length"]');
+            if (!sel) {
+                // Fallback: varre todos os selects procurando a opção Todos/-1
+                var all = document.querySelectorAll('select');
+                for (var j = 0; j < all.length; j++) {
+                    var s = all[j];
+                    for (var k = 0; k < s.options.length; k++) {
+                        if ((s.options[k].text || '').trim().toLowerCase() === 'todos'
+                                || s.options[k].value === '-1') {
+                            sel = s;
+                            break;
+                        }
                     }
+                    if (sel) break;
                 }
             }
-            return false;
+            if (!sel) return null;
+            // Encontra a opção Todos ou value -1
+            for (var i = 0; i < sel.options.length; i++) {
+                var opt = sel.options[i];
+                if ((opt.text || '').trim().toLowerCase() === 'todos' || opt.value === '-1') {
+                    sel.value = opt.value;
+                    sel.dispatchEvent(new Event('change', { bubbles: true }));
+                    return opt.value;
+                }
+            }
+            return null;
         }
-    """
-    try:
-        pagina.evaluate(js)
+    """)
+
+    if resultado is not None:
+        log.info("JS fallback: value='%s' aplicado.", resultado)
         time.sleep(1.5)
-        pagina.wait_for_load_state("networkidle", timeout=10_000)
-    except Exception as exc:
-        log.warning("Não foi possível clicar em 'Todos': %s", exc)
+        _aguardar_tabela_estavel(pagina, timeout_ms=30_000)
+        return
+
+    log.warning("Não foi possível selecionar 'Todos' — prosseguindo com paginação padrão.")
 
 
 def _aguardar_tabela_estavel(pagina, timeout_ms: int = 60_000) -> None:

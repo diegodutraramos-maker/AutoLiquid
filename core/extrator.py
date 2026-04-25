@@ -2,10 +2,10 @@ import pdfplumber
 import re
 from datetime import datetime
 from pathlib import Path
-from datas_impostos import CODIGO_SIAFI
+from core.datas_impostos import CODIGO_SIAFI
 
 try:
-    from de_para_contratos import buscar_ig_por_contrato
+    from core.de_para_contratos import buscar_ig_por_contrato
 except ImportError:
     def buscar_ig_por_contrato(n):
         return "", ""
@@ -23,10 +23,28 @@ FONTES_RECURSO_3 = {
 CODIGO_SITUACAO_SIAFI = dict(CODIGO_SIAFI)
 
 
+def _is_garbled(s: str) -> bool:
+    """Retorna True se a string parece ser artefato de sobreposição de colunas no pdfplumber.
+
+    Uma string garbled tem a maioria das posições como pares de caracteres idênticos.
+    Ex.: '66,,007755..2277' → quase 100% das transições são pares iguais → garbled.
+    Ex.: '1.500,00'         → apenas o '00' final forma par → ~14% → não garbled.
+    """
+    if len(s) < 4:
+        return False
+    pares = sum(1 for i in range(len(s) - 1) if s[i] == s[i + 1])
+    return pares / (len(s) - 1) > 0.5
+
+
 def _ungarble(s: str) -> str:
     """Remove duplicação de caracteres causada por sobreposição de colunas no pdfplumber.
     Ex.: '66,,007755..2277' → '6,075.27'
+
+    Só é aplicado quando a string passa no teste _is_garbled para não corromper
+    valores com dígitos repetidos legítimos (ex.: '1.500,00' → não deve mudar).
     """
+    if not _is_garbled(s):
+        return s
     result, i = [], 0
     while i < len(s):
         c = s[i]
@@ -103,6 +121,53 @@ def _extrair_identificadores_documento(texto: str) -> tuple[str, str]:
         processo = match_processo.group(1).strip()
 
     return sol, processo
+
+
+def _limpar_campo_documento(valor: str, fallback: str = "—") -> str:
+    texto = str(valor or "").strip()
+    if not texto or texto.lower() == "não encontrado":
+        return fallback
+    return texto
+
+
+def _normalizar_documento_fiscal(valor: str) -> str:
+    """Retorna CPF/CNPJ apenas com dígitos quando o tamanho parece válido."""
+    digitos = re.sub(r"\D", "", str(valor or ""))
+    if len(digitos) in {11, 14}:
+        return digitos
+    if len(digitos) > 14:
+        # Em alguns PDFs o texto cola rótulos/colunas; preserva o CNPJ à direita.
+        for tamanho in (14, 11):
+            candidato = digitos[-tamanho:]
+            if len(candidato) == tamanho:
+                return candidato
+    return ""
+
+
+def _extrair_cpf_cnpj_documento(texto: str, texto_cabecalho: str = "") -> str:
+    """Aceita os layouts antigos e o layout novo com rótulo CNPJ/CPF."""
+    texto_busca = "\n".join([str(texto_cabecalho or ""), str(texto or "")])
+    padroes_rotulo = [
+        r"CPF\s*/\s*CNPJ\s*/\s*UG\s*:?\s*([0-9][0-9.\-/\s]{10,24})",
+        r"CNPJ\s*/\s*CPF\s*:?\s*([0-9][0-9.\-/\s]{10,24})",
+        r"CPF\s*/\s*CNPJ\s*:?\s*([0-9][0-9.\-/\s]{10,24})",
+        r"\bCNPJ\s*:?\s*([0-9][0-9.\-/\s]{10,24})",
+    ]
+    for padrao in padroes_rotulo:
+        match = re.search(padrao, texto_busca, re.IGNORECASE)
+        if match:
+            documento = _normalizar_documento_fiscal(match.group(1))
+            if documento:
+                return documento
+
+    topo = "\n".join(texto_busca.splitlines()[:35])
+    match_formatado = re.search(r"\b\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}\b", topo)
+    if match_formatado:
+        documento = _normalizar_documento_fiscal(match_formatado.group(0))
+        if documento:
+            return documento
+
+    return ""
 
 
 def _tokens_nome_arquivo(nome_arquivo: str | None) -> list[str]:
@@ -238,32 +303,73 @@ def extrair_dados_pdf(caminho_pdf, nome_arquivo: str | None = None):
                 _municipio_nf = m_mun.group(1).strip()
         dados_extraidos['Município da NF'] = _municipio_nf
 
-        # ── 1. CNPJ ──────────────────────────────────────────────────────────
-        match_cnpj = re.search(r"CPF/CNPJ/UG:\s*([\d\.\/-]+)", texto)
-        dados_extraidos['CNPJ'] = re.sub(r'\D', '', match_cnpj.group(1)) if match_cnpj else "Não encontrado"
+        # ── 1. CNPJ/CPF ──────────────────────────────────────────────────────
+        dados_extraidos['CNPJ'] = (
+            _extrair_cpf_cnpj_documento(texto, texto_cabecalho)
+            or "Não encontrado"
+        )
+
+        match_nome_credor = (
+            re.search(r"Nome\s+do\s+Credor:\s*([^\n]+)", texto, re.IGNORECASE)
+            or re.search(r"Favorecido:\s*([^\n]+)", texto, re.IGNORECASE)
+            or re.search(r"Credor:\s*([^\n]+)", texto, re.IGNORECASE)
+            or re.search(r"\bNome:\s*([^\n]+?)(?=\s+(?:Munic[íi]pio|Banco|Ag[eê]ncia|CNPJ|CPF)\b|$)", texto, re.IGNORECASE)
+        )
+        dados_extraidos['Nome do Credor'] = (
+            match_nome_credor.group(1).strip() if match_nome_credor else ""
+        )
 
         # ── 1.1 Dados bancários (Banco / Agência / Conta) ────────────────────
         # Linha típica: "Banco: 033   Agência: 2102   Conta: 130057029"
         match_banco   = re.search(r"Banco:\s*(\d+)", texto, re.IGNORECASE)
         match_agencia = re.search(r"Ag[eê]ncia:\s*(\d+)", texto, re.IGNORECASE)
-        match_conta   = re.search(r"\bConta:\s*(\d+)", texto, re.IGNORECASE)
+        match_conta   = re.search(r"\bConta:\s*(\d+(?:-\d+)?)", texto, re.IGNORECASE)
         dados_extraidos['Banco']   = match_banco.group(1).strip()   if match_banco   else ""
         dados_extraidos['Agência'] = match_agencia.group(1).strip() if match_agencia else ""
         dados_extraidos['Conta']   = match_conta.group(1).strip()   if match_conta   else ""
 
         # ── 1.5 Processo ─────────────────────────────────────────────────────
-        match_processo = re.search(r"Processo:\s*([\d\.\/]+)", texto)
-        dados_extraidos['Processo'] = match_processo.group(1) if match_processo else "Não encontrado"
-
-        # ── 1.6 Natureza — da linha do empenho (após Classificação 2) ────────
-        # Ex.: "2024003702 DSP102 33111__00 213110400 339030.26 0.00 476.30 ..."
-        match_nat = re.search(
-            r"\d{10,}\s+DSP\d+\s+\S+\s+\d{7,9}\s+(\d{6}[.,]\d{2})",
-            texto
+        match_processo = (
+            re.search(r"Processo\s*:\s*([\d./-]{7,})", texto, re.IGNORECASE)
+            or re.search(r"\bProcesso\b[^\d]{0,20}([\d./-]{7,})", texto, re.IGNORECASE)
+            or re.search(r"\b(\d{5}\.\d{5,}/\d{4})\b", texto)
+            or re.search(r"\b(\d{5}\.\d{6}/\d{4})\b", texto)
         )
-        if not match_nat:
-            match_nat = re.search(r"(:Natureza)[^\d]*([\d]{6}[.,]\d{2})", texto, re.IGNORECASE)
-        natureza_raw = match_nat.group(1).replace(",", ".") if match_nat else ""
+        dados_extraidos['Processo'] = match_processo.group(1).strip() if match_processo else "Não encontrado"
+
+        # ── 1.6 Natureza — prioriza as linhas dos empenhos ───────────────────
+        natureza_raw = ""
+        empenhos_com_natureza = []
+        for linha in texto.splitlines():
+            linha_limpa = " ".join(str(linha or "").split()).strip()
+            if not linha_limpa:
+                continue
+            # Dados Orçamentários: EMPENHO SITUACAO CLASSIF1 CLASSIF2 NATUREZA SALDO VALOR [FONTE]
+            # Ex: "2026000968 DSP001 3323__00 213110400 339039.79 16,968.12 13,031.08 1000000000"
+            match_empenho_nat = re.search(
+                r"(\d{10,})\s+(DSP\d+)\s+\S+\s+\d{7,9}\s+(\d{6}[.,]\d{2})\s+([\d,.]+)\s+([\d,.]+)",
+                linha_limpa,
+                re.IGNORECASE,
+            )
+            if match_empenho_nat:
+                numero_empenho, situacao_empenho, natureza_linha, saldo_empenho, valor_empenho = match_empenho_nat.groups()
+                natureza_linha = natureza_linha.replace(",", ".")
+                empenhos_com_natureza.append(
+                    {
+                        "Empenho": numero_empenho,
+                        "Situação": situacao_empenho,
+                        "Natureza": natureza_linha,
+                        "Saldo": saldo_empenho,
+                        "Valor": valor_empenho,
+                    }
+                )
+                if not natureza_raw:
+                    natureza_raw = natureza_linha
+
+        if not natureza_raw:
+            match_nat = re.search(r"Natureza[^\d]{0,20}([\d]{6}[.,]\d{2})", texto, re.IGNORECASE)
+            natureza_raw = match_nat.group(1).replace(",", ".") if match_nat else ""
+
         dados_extraidos['Natureza'] = natureza_raw
 
         # ── 1.7 Contrato ─────────────────────────────────────────────────────
@@ -432,15 +538,26 @@ def extrair_dados_pdf(caminho_pdf, nome_arquivo: str | None = None):
         # ── 5. Empenhos e Recurso ─────────────────────────────────────────────
         empenhos_encontrados = re.findall(r"(\d{10,})\s+(DSP\d+)", texto)
         lista_empenhos = []
+        natureza_por_empenho = {
+            item["Empenho"]: item["Natureza"] for item in empenhos_com_natureza
+        }
+        # Dict completo com todos os campos extraídos por empenho (inclui Valor)
+        natureza_por_empenho_info = {
+            item["Empenho"]: item for item in empenhos_com_natureza
+        }
         for empenho in empenhos_encontrados:
             numero_empenho = empenho[0]
             situacao = empenho[1]
             ano_do_empenho = int(numero_empenho[:4])
             recurso = determinar_recurso(ano_do_empenho, fonte_encontrada, tem_convenio)
+            info_emp = natureza_por_empenho_info.get(numero_empenho, {})
             lista_empenhos.append({
                 'Empenho': numero_empenho,
                 'Situação': situacao,
                 'Recurso': recurso,
+                'Natureza': natureza_por_empenho.get(numero_empenho, natureza_raw),
+                'Valor': info_emp.get("Valor", ""),
+                'Saldo': info_emp.get("Saldo", ""),
             })
         dados_extraidos['Empenhos'] = lista_empenhos
 
@@ -464,7 +581,7 @@ def extrair_dados_pdf(caminho_pdf, nome_arquivo: str | None = None):
         # Linha SEM código:    SITUACAO CNPJ8+/xxx-xx BASE GARBLED [REND5+]
         lista_deducoes = []
         match_ded_bloco = re.search(
-            r"Dedu[çc][õo]es:(.*)(:Detalhamento|RESUMO)",
+            r"Dedu[çc][õo]es:(.*?)(?=Detalhamento\s+de\s+Fonte:|RESUMO:)",
             texto, re.DOTALL | re.IGNORECASE
         )
         if match_ded_bloco:
@@ -479,8 +596,9 @@ def extrair_dados_pdf(caminho_pdf, nome_arquivo: str | None = None):
 
                 # Tenta com código numérico de 4 dígitos.
                 # Ex.: "DIVS 6147 43843358/0003-50 26.592,17 1.555,64 17009"
+                # Ex.: "DIVS 6147 43.843.358/0001-52 26.592,17 1.555,64 17009"
                 m = re.match(
-                    r'([A-Z][A-Z0-9]+)\s+(\d{4})\s+(\d{8,}/[\d\-]+)\s+([\d,.]+)\s+(-?[\d,.]+)(?:\s+(\d{5,}))?$',
+                    r'([A-Z][A-Z0-9]+)\s+(\d{4})\s+([\d.]{8,}/[\d\-]+)\s+([\d,.]+)\s+(-?[\d,.]+)(?:\s+(\d{5,}))?$',
                     linha
                 )
                 if m:
@@ -488,7 +606,7 @@ def extrair_dados_pdf(caminho_pdf, nome_arquivo: str | None = None):
                 else:
                     # Sem código — situação já é o nome SIAFI ou código ausente.
                     m = re.match(
-                        r'([A-Z][A-Z0-9]+)\s+(\d{8,}/[\d\-]+)\s+([\d,.]+)\s+(-?[\d,.]+)(?:\s+(\d{5,}))?$',
+                        r'([A-Z][A-Z0-9]+)\s+([\d.]{8,}/[\d\-]+)\s+([\d,.]+)\s+(-?[\d,.]+)(?:\s+(\d{5,}))?$',
                         linha
                     )
                     if m:
@@ -517,6 +635,9 @@ def extrair_dados_pdf(caminho_pdf, nome_arquivo: str | None = None):
         dados_extraidos['_pagina_inicio'] = pagina_inicio + 1
         dados_extraidos['_pagina_fim'] = pagina_fim + 1
 
+    dados_extraidos['CNPJ'] = _limpar_campo_documento(dados_extraidos.get('CNPJ', ''), "—")
+    dados_extraidos['Processo'] = _limpar_campo_documento(dados_extraidos.get('Processo', ''), "—")
+    dados_extraidos['Natureza'] = _limpar_campo_documento(dados_extraidos.get('Natureza', ''), "—")
     return dados_extraidos
 
 

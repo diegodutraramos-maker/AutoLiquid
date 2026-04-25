@@ -22,11 +22,11 @@ import re
 import time
 import logging
 import unicodedata
-from comprasnet_base import (
+from comprasnet.base import (
     conectar, config_situacao, extrair_codigo_situacao,
     normalizar_valor, extrair_siafi_completo,
 )
-from datas_impostos import calcular_datas
+from core.datas_impostos import calcular_datas
 
 log = logging.getLogger(__name__)
 
@@ -46,6 +46,7 @@ _MUNICIPIO_NOME = {
     "8093": "Curitibanos",
     "8027": "Araranguá",
     "5549": "Barra do Sul",
+    "8465": "Gov. Celso Ramos",
     "8327": "São José",
 }
 
@@ -59,6 +60,7 @@ _DOB001_TIPO_OB = {
     "8093": "OB Fatura",
     "8179": "OB Crédito",
     "5549": "OB Fatura",
+    "8465": "OB Fatura",
 }
 
 _CODIGOS_DDR001 = {"8105", "8047"}
@@ -3261,7 +3263,7 @@ def executar(
         # ① DDR001 — ISS (uma entrada por Nota Fiscal)
         # ══════════════════════════════════════════════════════════════════════
         if ddr001_list:
-            from comprasnet_deducao_ddr001 import executar_ddr001
+            from comprasnet.deducao_ddr001 import executar_ddr001
             executar_ddr001(
                 pagina,
                 ddr001_list,
@@ -3281,7 +3283,7 @@ def executar(
             if ddr001_list:
                 # Garante que todas as DDR001s terminaram antes de começar DDF021
                 _aguardar_portal_limpo_entre_tipos(pagina)
-            from comprasnet_deducao_ddf021 import executar_ddf021
+            from comprasnet.deducao_ddf021 import executar_ddf021
             executar_ddf021(
                 pagina,
                 ddf021_list,
@@ -3306,7 +3308,7 @@ def executar(
             if ddf021_list or ddr001_list:
                 # ← CORREÇÃO DEFINITIVA DA TRANSIÇÃO DDF021 → DDF025
                 _aguardar_portal_limpo_entre_tipos(pagina)
-            from comprasnet_deducao_ddf025 import executar_ddf025
+            from comprasnet.deducao_ddf025 import executar_ddf025
             executar_ddf025(
                 pagina,
                 ddf025_list,
@@ -3327,7 +3329,7 @@ def executar(
             _verificar_interrupcao(deve_parar)
             if ddf025_list or ddf021_list or ddr001_list:
                 _aguardar_portal_limpo_entre_tipos(pagina)
-            from comprasnet_deducao_dob001 import executar_dob001
+            from comprasnet.deducao_dob001 import executar_dob001
             executar_dob001(
                 pagina,
                 dob001_list,

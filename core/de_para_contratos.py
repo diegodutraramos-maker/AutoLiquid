@@ -44,16 +44,36 @@ def _garantir_arquivo_contratos() -> None:
     if _ARQUIVO.exists():
         return
 
-    recurso_padrao = caminho_recurso(_ARQUIVO.name)
-    if recurso_padrao.exists():
-        _ARQUIVO.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(recurso_padrao, _ARQUIVO)
+    candidatos = [
+        caminho_recurso(_ARQUIVO.name),
+        caminho_recurso("contratos_de_para.csv"),
+    ]
+    for recurso_padrao in candidatos:
+        if recurso_padrao.exists():
+            _ARQUIVO.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(recurso_padrao, _ARQUIVO)
+            return
 
 def _carregar() -> dict:
     global _cache
     if _cache is not None:
         return _cache
     _cache = {}
+    try:
+        from services.postgres_service import obter_tabela_operacional, postgres_habilitado
+
+        if postgres_habilitado():
+            rows = obter_tabela_operacional("contratos")
+            if rows is not None:
+                for row in rows:
+                    sarf = str((row or {}).get("sarf", "")).strip()
+                    ig = str((row or {}).get("ig", "")).strip()
+                    if sarf and re.match(r"^\d{9}$", sarf):
+                        _cache[sarf] = ig
+                return _cache
+    except Exception as e:
+        log.warning("Falha ao carregar contratos do PostgreSQL: %s", e)
+
     _garantir_arquivo_contratos()
     if not _ARQUIVO.exists():
         return _cache
@@ -72,6 +92,28 @@ def _carregar() -> dict:
                 ig   = str(row.get("IG",   "")).strip()
                 if sarf and re.match(r"^\d{9}$", sarf):
                     _cache[sarf] = ig
+        if not _cache:
+            for nome_fallback in ("DCF - CONTRATOS.csv", "contratos_de_para.csv"):
+                recurso_fallback = caminho_recurso(nome_fallback)
+                if not recurso_fallback.exists() or recurso_fallback == _ARQUIVO:
+                    continue
+                try:
+                    with recurso_fallback.open(encoding="utf-8-sig", newline="") as f:
+                        primeira = f.readline()
+                        if "SARF" in primeira.upper():
+                            f.seek(0)
+                        reader = csv.DictReader(f)
+                        for row in reader:
+                            sarf = str(row.get("SARF", "")).strip()
+                            ig = str(row.get("IG", "")).strip()
+                            if sarf and re.match(r"^\d{9}$", sarf):
+                                _cache[sarf] = ig
+                    if _cache:
+                        _ARQUIVO.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(recurso_fallback, _ARQUIVO)
+                        break
+                except Exception:
+                    continue
     except Exception as e:
         log.exception("Erro ao carregar CSV de contratos: %s", e)
     return _cache

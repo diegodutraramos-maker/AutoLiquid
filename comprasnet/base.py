@@ -69,6 +69,16 @@ SITUACOES = {
         "usa_centro_custo":  True,
         "conta_estoque":     "60100",        # → 1.1.5.6.1.01.00
     },
+    "DSP201": {
+        "descricao":         "Material Permanente — Bens Móveis (DSP)",
+        "contas_a_pagar":    "1104",         # → 2.1.3.1.1.04.00 (DSP usa 1104, não 104)
+        "usa_deducao":       False,
+        "usa_centro_custo":  False,
+        # Campos para preencher manualmente no SIAFI caso a automação não consiga:
+        # IMB050: Conta de Bens Móveis (auto-preenchida pelo portal)
+        # IMB050: Contas a Pagar = 2.1.3.1.1.04.00
+        # IMB050: VPD = conforme natureza de despesa
+    },
 }
 
 # Alias: código numérico → código SIAFI completo preferido
