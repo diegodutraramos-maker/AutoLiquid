@@ -21,6 +21,12 @@ CONFIG_APP_PADRAO = {
     "tema_web": "light",
     "nivel_log": "desenvolvedor",
     "database_url": "",
+    "nome_usuario": "",
+    "nf_servico_alerta_dias_uteis": 3,
+    "rocket_chat_url": "https://chat.ufsc.br",
+    "rocket_chat_user_id": "",
+    "rocket_chat_auth_token": "",
+    "rocket_chat_contar": "tudo",
 }
 
 

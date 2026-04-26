@@ -1,10 +1,13 @@
 """Integração com navegadores (Chrome e Edge) usados pela automação."""
 
+import json
 import os
 import platform
 import socket
 import subprocess
 import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 from core.app_paths import DIR_PERFIL, PORTA_CHROME, URL_INICIAL
@@ -40,6 +43,25 @@ def chrome_esta_aberto(porta=None):
             return True
     except OSError:
         return False
+
+
+def chrome_cdp_esta_pronto(porta=None, timeout_s: float = 1.5) -> bool:
+    porta = resolver_porta_chrome(porta)
+    try:
+        with urllib.request.urlopen(
+            f"http://127.0.0.1:{porta}/json/version",
+            timeout=max(timeout_s, 0.2),
+        ) as response:
+            if getattr(response, "status", 200) >= 400:
+                return False
+            payload = json.loads(response.read().decode("utf-8", errors="ignore") or "{}")
+            return bool(payload.get("Browser") or payload.get("webSocketDebuggerUrl"))
+    except (OSError, ValueError, json.JSONDecodeError, urllib.error.URLError):
+        return False
+
+
+def chrome_esta_pronto(porta=None, timeout_s: float = 1.5) -> bool:
+    return chrome_esta_aberto(porta) and chrome_cdp_esta_pronto(porta, timeout_s=timeout_s)
 
 
 def _spawn_detached(cmd: list[str]) -> None:
@@ -142,12 +164,12 @@ def abrir_chrome(porta=None, aguardar=False, timeout_s=10, navegador: str | None
     if aguardar:
         limite = time.time() + max(timeout_s, 1)
         while time.time() < limite:
-            if chrome_esta_aberto(porta):
+            if chrome_esta_pronto(porta):
                 return porta
             time.sleep(0.5)
         nav_nome = "Edge" if navegador == "edge" else "Chrome"
         raise RuntimeError(
-            f"{nav_nome} não respondeu na porta {porta} após {timeout_s} segundos."
+            f"{nav_nome} não ficou pronto para automação na porta {porta} após {timeout_s} segundos."
         )
     return porta
 
@@ -166,7 +188,7 @@ def conectar_chrome_cdp(porta=None, abrir_se_fechado=True):
         pass
 
     porta = resolver_porta_chrome(porta)
-    if not chrome_esta_aberto(porta):
+    if not chrome_esta_pronto(porta):
         if abrir_se_fechado:
             abrir_chrome(porta, aguardar=True)
         else:

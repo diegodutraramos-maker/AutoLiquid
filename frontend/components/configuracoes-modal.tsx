@@ -3,18 +3,21 @@
 import { useEffect, useState } from "react";
 import {
   ArrowDownToLine,
-  CalendarDays,
   Check,
   CheckCircle2,
   Chrome,
-  Coffee,
-  Copy,
   Database,
   ExternalLink,
+  Eye,
+  EyeOff,
+  Copy,
+  Github,
   Globe,
   Loader2,
+  Mail,
+  MessageCircle,
+  Monitor,
   Moon,
-  Play,
   RefreshCw,
   Save,
   Settings,
@@ -28,6 +31,7 @@ import { useTheme } from "next-themes";
 import { GlassButton, GlassCard } from "./glass-card";
 import {
   fetchAppSettings,
+  fetchRocketChatNotifications,
   openChromeSession,
   recarregarModulos,
   saveAppSettings,
@@ -42,7 +46,6 @@ interface ConfiguracoesModalProps {
   onClose: () => void;
   onSaved?: (settings: AppSettings) => void;
   onChromeOpened?: () => void;
-  onOpenDatas?: () => void;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -51,6 +54,13 @@ const DEFAULT_SETTINGS: AppSettings = {
   perguntarLimparMes: true,
   temaWeb: "light",
   nivelLog: "desenvolvedor",
+  databaseUrl: "",
+  nomeUsuario: "",
+  nfServicoAlertaDiasUteis: 3,
+  rocketChatUrl: "https://chat.ufsc.br",
+  rocketChatUserId: "",
+  rocketChatAuthToken: "",
+  rocketChatContar: "tudo",
 };
 
 const SUPABASE_PROJECT_URL = "https://supabase.com/dashboard/project/fxffsintfysatyglcmmi";
@@ -62,7 +72,6 @@ export function ConfiguracoesModal({
   onClose,
   onSaved,
   onChromeOpened,
-  onOpenDatas,
 }: ConfiguracoesModalProps) {
   const router = useRouter();
   const { setTheme } = useTheme();
@@ -71,7 +80,6 @@ export function ConfiguracoesModal({
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [erro, setErro] = useState("");
-  const [pixCopiado, setPixCopiado] = useState(false);
   const [abrindoNavegador, setAbrindoNavegador] = useState(false);
   const [recarregando, setRecarregando] = useState(false);
   const [msgRecarregar, setMsgRecarregar] = useState("");
@@ -86,6 +94,10 @@ export function ConfiguracoesModal({
   const [verificandoUpdate, setVerificandoUpdate] = useState(false);
   const [infoUpdate, setInfoUpdate] = useState<VersaoInfo | null>(null);
   const [baixando, setBaixando] = useState(false);
+  const [showDbUrl, setShowDbUrl] = useState(false);
+  const [showRocketToken, setShowRocketToken] = useState(false);
+  const [testandoRocket, setTestandoRocket] = useState(false);
+  const [resultadoRocket, setResultadoRocket] = useState("");
 
   useEffect(() => {
     if (!isOpen) return;
@@ -97,8 +109,6 @@ export function ConfiguracoesModal({
     const carregar = async () => {
       setLoading(true);
       setErro("");
-      setPixCopiado(false);
-
       try {
         const data = await fetchAppSettings();
         if (!ativo) return;
@@ -120,15 +130,6 @@ export function ConfiguracoesModal({
   }, [isOpen]);
 
   if (!isOpen) return null;
-
-  const handleCopiarPix = async () => {
-    try {
-      await navigator.clipboard.writeText("111.779.619-11");
-      setPixCopiado(true);
-    } catch {
-      setPixCopiado(false);
-    }
-  };
 
   const handleSave = async () => {
     setSaving(true);
@@ -251,6 +252,33 @@ export function ConfiguracoesModal({
     }
   };
 
+  const handleTestarRocketChat = async () => {
+    setTestandoRocket(true);
+    setResultadoRocket("");
+    setErro("");
+    try {
+      const saved = await saveAppSettings(settings);
+      setSettings(saved);
+      onSaved?.(saved);
+      const resultado = await fetchRocketChatNotifications();
+      if (!resultado.configured) {
+        setResultadoRocket("Rocket.Chat ainda não está configurado. Informe User ID e token.");
+      } else {
+        setResultadoRocket(
+          `Conectado. ${resultado.unread} não lida(s), ${resultado.mentions} menção(ões). Badge atual: ${resultado.count}.`
+        );
+      }
+    } catch (error) {
+      setResultadoRocket(
+        error instanceof Error
+          ? error.message
+          : "Não foi possível testar o Rocket.Chat."
+      );
+    } finally {
+      setTestandoRocket(false);
+    }
+  };
+
   const nomeNavegador = settings.navegador === "edge" ? "Edge" : "Chrome";
 
   return (
@@ -319,6 +347,25 @@ export function ConfiguracoesModal({
                 {/* ── ABA BÁSICO ── */}
                 {abaAtiva === "basico" && (
                   <>
+                    {/* Seu nome */}
+                    <section className="rounded-2xl border border-glass-border bg-secondary/25 px-4 py-4">
+                      <div className="flex flex-col gap-3">
+                        <div>
+                          <p className="text-sm font-semibold text-foreground">Seu nome</p>
+                          <p className="mt-1 text-sm text-muted-foreground">
+                            Aparece nos registros de execução para identificar quem realizou o processo.
+                          </p>
+                        </div>
+                        <input
+                          type="text"
+                          value={settings.nomeUsuario}
+                          onChange={(e) => setSettings((c) => ({ ...c, nomeUsuario: e.target.value }))}
+                          placeholder="Seu nome"
+                          className="w-full rounded-xl border border-glass-border bg-background/80 px-3 py-2.5 text-sm text-foreground outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
+                        />
+                      </div>
+                    </section>
+
                     {/* Aparência */}
                     <section className="space-y-3">
                       <div>
@@ -327,10 +374,11 @@ export function ConfiguracoesModal({
                           O tema claro é o padrão da interface web.
                         </p>
                       </div>
-                      <div className="grid gap-3 sm:grid-cols-2">
+                      <div className="grid gap-3 sm:grid-cols-3">
                         {[
-                          { value: "light" as const, title: "Tema Claro", description: "Superfície clara, contraste suave e leitura direta.", icon: Sun },
-                          { value: "dark" as const, title: "Tema Escuro", description: "Versão noturna para ambientes com pouca luz.", icon: Moon },
+                          { value: "light" as const, title: "Claro", description: "Superfície clara e leitura direta.", icon: Sun },
+                          { value: "dark" as const, title: "Escuro", description: "Versão noturna para pouca luz.", icon: Moon },
+                          { value: "system" as const, title: "Sistema", description: "Segue o tema do sistema operacional.", icon: Monitor },
                         ].map((option) => {
                           const Icon = option.icon;
                           const active = settings.temaWeb === option.value;
@@ -412,57 +460,6 @@ export function ConfiguracoesModal({
                         })}
                       </div>
 
-                      {/* Abrir navegador */}
-                      <div className="flex justify-end">
-                        <GlassButton
-                          variant="secondary"
-                          size="sm"
-                          onClick={handleAbrirNavegador}
-                          disabled={abrindoNavegador}
-                        >
-                          <Play className="h-4 w-4" />
-                          {abrindoNavegador ? `Abrindo ${nomeNavegador}...` : `Abrir ${nomeNavegador}`}
-                        </GlassButton>
-                      </div>
-                    </section>
-
-                    {/* Datas */}
-                    <section className="rounded-2xl border border-sky-500/20 bg-sky-500/10 px-4 py-4">
-                      <div
-                        role="button"
-                        tabIndex={onOpenDatas ? 0 : -1}
-                        onClick={() => { if (!onOpenDatas) return; onClose(); onOpenDatas(); }}
-                        onKeyDown={(e) => {
-                          if ((e.key === "Enter" || e.key === " ") && onOpenDatas) {
-                            e.preventDefault(); onClose(); onOpenDatas();
-                          }
-                        }}
-                        className={`flex w-full items-start gap-3 text-left${!onOpenDatas ? " opacity-50 cursor-not-allowed" : " cursor-pointer"}`}
-                      >
-                        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-sky-500/20 bg-background/80 text-sky-700 shadow-[0_16px_30px_-24px_rgba(14,116,144,0.85)]">
-                          <CalendarDays className="h-5 w-5" />
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center justify-between gap-3">
-                            <div>
-                              <h3 className="text-sm font-semibold text-foreground">Datas</h3>
-                              <p className="mt-1 text-sm text-muted-foreground">
-                                Regras de vencimento, apuração e exceções por imposto.
-                              </p>
-                            </div>
-                            <GlassButton
-                              type="button"
-                              variant="ghost"
-                              size="sm"
-                              className="border border-sky-500/20 bg-background/80 text-foreground hover:bg-background pointer-events-none shrink-0"
-                              tabIndex={-1}
-                              aria-hidden
-                            >
-                              Abrir regras
-                            </GlassButton>
-                          </div>
-                        </div>
-                      </div>
                     </section>
 
                     {/* Atualização */}
@@ -563,42 +560,45 @@ export function ConfiguracoesModal({
                       </div>
                     </section>
 
-                    {/* Apoiar o desenvolvimento */}
-                    <section className="rounded-2xl border border-amber-500/20 bg-amber-500/10 px-4 py-5">
-                      <div className="flex flex-col items-center gap-4 text-center">
-                        <div className="flex h-14 w-14 items-center justify-center rounded-2xl border border-amber-500/20 bg-background/80 text-amber-600 shadow-[0_16px_30px_-24px_rgba(180,83,9,0.8)]">
-                          <Coffee className="h-7 w-7" />
-                        </div>
+                    {/* Contato */}
+                    <section className="rounded-2xl border border-glass-border bg-secondary/25 px-4 py-5">
+                      <div className="flex flex-col gap-4">
                         <div>
-                          <h3 className="text-sm font-semibold text-foreground">Apoiar o desenvolvimento</h3>
+                          <h3 className="text-sm font-semibold text-foreground">Contato</h3>
                           <p className="mt-1 text-sm text-muted-foreground">
-                            Se a automação está te ajudando, considere pagar um café. ☕
+                            Dúvidas ou sugestões — fale com o desenvolvedor.
                           </p>
                         </div>
-
-                        <div className="w-full rounded-2xl border border-glass-border bg-background/75 px-4 py-3">
-                          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-muted-foreground">
-                            Chave PIX
-                          </p>
-                          <p className="mt-1.5 text-base font-semibold tracking-[0.04em] text-foreground">
-                            111.779.619-11
-                          </p>
-                          <p className="mt-0.5 text-sm text-muted-foreground">Diego Dutra Ramos</p>
+                        <div className="flex flex-col gap-2">
+                          <button
+                            type="button"
+                            onClick={() => abrirUrl("mailto:diegodutraramos@gmail.com")}
+                            className="group flex items-center gap-3 rounded-xl border border-glass-border bg-background/70 px-3 py-2.5 text-sm transition hover:border-primary/40 hover:bg-background text-left"
+                          >
+                            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-glass-border bg-secondary/60 text-muted-foreground transition group-hover:border-primary/30 group-hover:text-primary">
+                              <Mail className="h-4 w-4" />
+                            </span>
+                            <span className="min-w-0 flex-1">
+                              <span className="block text-xs font-medium text-muted-foreground">E-mail</span>
+                              <span className="block truncate text-sm text-foreground">diegodutraramos@gmail.com</span>
+                            </span>
+                            <ExternalLink className="h-3.5 w-3.5 shrink-0 text-muted-foreground/50 transition group-hover:text-muted-foreground" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => abrirUrl("https://github.com/diegodutraramos-maker")}
+                            className="group flex items-center gap-3 rounded-xl border border-glass-border bg-background/70 px-3 py-2.5 text-sm transition hover:border-primary/40 hover:bg-background text-left"
+                          >
+                            <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-glass-border bg-secondary/60 text-muted-foreground transition group-hover:border-primary/30 group-hover:text-primary">
+                              <Github className="h-4 w-4" />
+                            </span>
+                            <span className="min-w-0 flex-1">
+                              <span className="block text-xs font-medium text-muted-foreground">GitHub</span>
+                              <span className="block truncate text-sm text-foreground">diegodutraramos-maker</span>
+                            </span>
+                            <ExternalLink className="h-3.5 w-3.5 shrink-0 text-muted-foreground/50 transition group-hover:text-muted-foreground" />
+                          </button>
                         </div>
-
-                        <GlassButton
-                          variant="ghost"
-                          size="sm"
-                          onClick={handleCopiarPix}
-                          className="border border-amber-500/20 bg-background/80 text-foreground hover:bg-background"
-                        >
-                          {pixCopiado ? (
-                            <Check className="h-4 w-4 text-success" />
-                          ) : (
-                            <Copy className="h-4 w-4" />
-                          )}
-                          {pixCopiado ? "PIX copiado!" : "Copiar chave PIX"}
-                        </GlassButton>
                       </div>
                     </section>
                   </>
@@ -618,6 +618,209 @@ export function ConfiguracoesModal({
                         Supabase
                         <ExternalLink className="h-3 w-3 text-muted-foreground" />
                       </button>
+                    </section>
+
+                    {/* Rocket.Chat */}
+                    <section className="rounded-2xl border border-red-500/15 bg-red-500/5 px-4 py-4">
+                      <div className="flex items-start gap-3">
+                        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl border border-red-500/20 bg-background/80 text-red-600 shadow-[0_16px_30px_-24px_rgba(239,68,68,0.75)]">
+                          <MessageCircle className="h-5 w-5" />
+                        </div>
+                        <div className="min-w-0 flex-1 space-y-3">
+                          <div>
+                            <p className="text-sm font-semibold text-foreground">Rocket.Chat</p>
+                            <p className="mt-1 text-sm text-muted-foreground">
+                              Conecta o contador de mensagens não lidas ao badge vermelho do topo.
+                            </p>
+                          </div>
+                          <div className="space-y-1.5">
+                            <span className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
+                              Contador
+                            </span>
+                            <div className="grid gap-2 rounded-2xl border border-glass-border bg-background/70 p-1.5 sm:grid-cols-2">
+                              {[
+                                {
+                                  value: "tudo" as const,
+                                  title: "Todas não lidas",
+                                  description: "Canais, grupos e DMs.",
+                                },
+                                {
+                                  value: "mencoes" as const,
+                                  title: "Somente menções",
+                                  description: "Quando chamarem você.",
+                                },
+                              ].map((option) => {
+                                const active = settings.rocketChatContar === option.value;
+                                return (
+                                  <button
+                                    key={option.value}
+                                    type="button"
+                                    onClick={() =>
+                                      setSettings((current) => ({
+                                        ...current,
+                                        rocketChatContar: option.value,
+                                      }))
+                                    }
+                                    className={[
+                                      "rounded-xl px-3 py-2 text-left transition",
+                                      active
+                                        ? "border border-red-500/25 bg-red-500/10 text-red-700 shadow-sm"
+                                        : "border border-transparent text-muted-foreground hover:bg-secondary/55 hover:text-foreground",
+                                    ].join(" ")}
+                                  >
+                                    <span className="block text-sm font-semibold leading-5">{option.title}</span>
+                                    <span className="mt-0.5 block truncate text-[11px] leading-4 opacity-75">
+                                      {option.description}
+                                    </span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                          <div className="space-y-3">
+                            <label className="space-y-1.5 sm:col-span-2">
+                              <span className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
+                                URL
+                              </span>
+                              <input
+                                type="url"
+                                value={settings.rocketChatUrl}
+                                onChange={(e) =>
+                                  setSettings((c) => ({ ...c, rocketChatUrl: e.target.value }))
+                                }
+                                onBlur={() =>
+                                  setSettings((current) => {
+                                    const url = current.rocketChatUrl.trim();
+                                    if (!url || url.startsWith("http://") || url.startsWith("https://")) {
+                                      return { ...current, rocketChatUrl: url };
+                                    }
+                                    return { ...current, rocketChatUrl: `https://${url}` };
+                                  })
+                                }
+                                placeholder="https://chat.ufsc.br"
+                                className="w-full rounded-xl border border-glass-border bg-background/80 px-3 py-2.5 text-sm text-foreground outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
+                              />
+                            </label>
+                            <label className="space-y-1.5 sm:col-span-2">
+                              <span className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
+                                User ID
+                              </span>
+                              <input
+                                type="text"
+                                value={settings.rocketChatUserId}
+                                onChange={(e) =>
+                                  setSettings((c) => ({ ...c, rocketChatUserId: e.target.value }))
+                                }
+                                placeholder="Seu X-User-Id"
+                                className="w-full rounded-xl border border-glass-border bg-background/80 px-3 py-2.5 text-sm text-foreground outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
+                              />
+                            </label>
+                            <label className="space-y-1.5 sm:col-span-2">
+                              <span className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
+                                Token pessoal
+                              </span>
+                              <div className="relative">
+                                <input
+                                  type={showRocketToken ? "text" : "password"}
+                                  value={settings.rocketChatAuthToken}
+                                  onChange={(e) =>
+                                    setSettings((c) => ({ ...c, rocketChatAuthToken: e.target.value }))
+                                  }
+                                  placeholder="X-Auth-Token ou Personal Access Token"
+                                  className="w-full rounded-xl border border-glass-border bg-background/80 py-2.5 pl-3 pr-10 text-sm text-foreground font-mono outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => setShowRocketToken((v) => !v)}
+                                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground transition-colors hover:text-foreground"
+                                  tabIndex={-1}
+                                  aria-label={showRocketToken ? "Ocultar token" : "Mostrar token"}
+                                >
+                                  {showRocketToken
+                                    ? <EyeOff className="h-4 w-4" />
+                                    : <Eye className="h-4 w-4" />}
+                                </button>
+                              </div>
+                            </label>
+                          </div>
+                          <p className="text-xs leading-5 text-muted-foreground">
+                            Dica: no Rocket.Chat, gere um Personal Access Token nas preferências da sua conta. O AutoLiquid usa apenas leitura das suas inscrições para contar mensagens.
+                          </p>
+                          <div className="flex flex-col gap-2 rounded-xl border border-glass-border bg-background/70 px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
+                            <p className="text-xs leading-5 text-muted-foreground">
+                              Use o teste para confirmar se o token foi salvo e se a API retornou mensagens não lidas.
+                            </p>
+                            <GlassButton
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              onClick={handleTestarRocketChat}
+                              disabled={testandoRocket}
+                              className="shrink-0 border border-red-500/20 bg-background/80 text-foreground hover:bg-background"
+                            >
+                              {testandoRocket ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <RefreshCw className="h-4 w-4" />
+                              )}
+                              {testandoRocket ? "Testando..." : "Testar conexão"}
+                            </GlassButton>
+                          </div>
+                          {resultadoRocket ? (
+                            <div
+                              className={[
+                                "rounded-xl border px-3 py-2 text-sm",
+                                resultadoRocket.toLowerCase().includes("conectado")
+                                  ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-700"
+                                  : "border-amber-500/25 bg-amber-500/10 text-amber-800",
+                              ].join(" ")}
+                            >
+                              {resultadoRocket}
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                    </section>
+
+                    {/* URL do banco de dados */}
+                    <section className="rounded-2xl border border-glass-border bg-secondary/25 px-4 py-4">
+                      <div className="flex flex-col gap-3">
+                        <div>
+                          <p className="text-sm font-semibold text-foreground">
+                            URL do banco de dados
+                          </p>
+                          <p className="mt-1 text-sm text-muted-foreground">
+                            Connection string do Supabase (
+                            <code className="rounded bg-secondary/60 px-1 py-0.5 text-xs">
+                              DATABASE_URL
+                            </code>
+                            ). Necessário para o Histórico de Processos.
+                          </p>
+                        </div>
+                        <div className="relative">
+                          <input
+                            id="database-url"
+                            type={showDbUrl ? "text" : "password"}
+                            value={settings.databaseUrl}
+                            onChange={(e) =>
+                              setSettings((c) => ({ ...c, databaseUrl: e.target.value }))
+                            }
+                            placeholder="postgresql://postgres:[password]@db.[ref].supabase.co:5432/postgres"
+                            className="w-full rounded-xl border border-glass-border bg-background/80 py-2.5 pl-3 pr-10 text-sm text-foreground font-mono shadow-inner outline-none transition focus:border-primary focus:ring-2 focus:ring-primary/20"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowDbUrl((v) => !v)}
+                            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground transition-colors"
+                            tabIndex={-1}
+                            aria-label={showDbUrl ? "Ocultar URL" : "Mostrar URL"}
+                          >
+                            {showDbUrl
+                              ? <EyeOff className="h-4 w-4" />
+                              : <Eye className="h-4 w-4" />}
+                          </button>
+                        </div>
+                      </div>
                     </section>
 
                     {/* Porta de depuração */}

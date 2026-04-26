@@ -3,16 +3,23 @@
 from __future__ import annotations
 
 import importlib
+import asyncio
 import json
 import logging
 import os
 import shutil
+import socket
 import sys
 import tempfile
 import inspect
+import time
 import unicodedata
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from copy import deepcopy
+from datetime import datetime
 from pathlib import Path
+from queue import Empty, Queue
+from threading import Lock, Thread
 from typing import Any
 from uuid import uuid4
 
@@ -37,8 +44,9 @@ except Exception:
 
 import re
 import requests
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from core.app_paths import URL_INICIAL
@@ -46,15 +54,18 @@ from core.runtime_config import obter_datas_salvas, obter_porta_chrome, salvar_d
 
 log = logging.getLogger(__name__)
 
-# ── Injeta DATABASE_URL da config se não estiver no ambiente ──────────────────
-# Isso permite configurar o banco pela UI em desenvolvimento local,
-# sem precisar editar arquivos .env manualmente.
+# ── Injeta variáveis de config no ambiente (desenvolvimento local) ─────────────
 try:
+    from services.config_service import carregar_config_app as _carregar_cfg
+    _cfg = _carregar_cfg() or {}
     if not os.getenv("DATABASE_URL"):
-        from services.config_service import carregar_config_app as _carregar_cfg
-        _db_url = str((_carregar_cfg() or {}).get("database_url") or "").strip()
+        _db_url = str(_cfg.get("database_url") or "").strip()
         if _db_url:
             os.environ["DATABASE_URL"] = _db_url
+    if not os.getenv("AUTO_LIQUID_NOME"):
+        _nome = str(_cfg.get("nome_usuario") or "").strip()
+        if _nome:
+            os.environ["AUTO_LIQUID_NOME"] = _nome
 except Exception:
     pass
 
@@ -120,6 +131,19 @@ ETAPAS_BASE = [
 ]
 
 DOCUMENTOS_PROCESSADOS: dict[str, dict[str, Any]] = {}
+FILA_PROCESSOS_CACHE: dict[str, Any] = {
+    "rows": [],
+    "columns": [],
+    "updatedAt": None,
+}
+FILA_EVENT_SUBSCRIBERS: set[Queue[str]] = set()
+FILA_EVENT_SUBSCRIBERS_LOCK = Lock()
+FILA_EVENT_LISTENER_LOCK = Lock()
+FILA_EVENT_LISTENER_STARTED = False
+FILA_SNAPSHOT_DB_RETRY_AFTER = 0.0
+FILA_SNAPSHOT_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="fila-snapshot")
+FILA_SNAPSHOT_FUTURE = None
+FILA_SNAPSHOT_FUTURE_LOCK = Lock()
 
 
 def _chrome_service():
@@ -135,6 +159,122 @@ def _web_config_service():
 def _postgres_service():
     from services import postgres_service
     return postgres_service
+
+
+def _broadcast_fila_event(payload: dict[str, Any]) -> None:
+    mensagem = json.dumps(payload, ensure_ascii=False)
+    with FILA_EVENT_SUBSCRIBERS_LOCK:
+        subscribers = list(FILA_EVENT_SUBSCRIBERS)
+    for subscriber in subscribers:
+        try:
+            subscriber.put_nowait(mensagem)
+        except Exception:
+            continue
+
+
+def _fila_event_listener_loop() -> None:
+    while True:
+        try:
+            postgres_service = _postgres_service()
+            if not postgres_service.postgres_habilitado():
+                time.sleep(5)
+                continue
+
+            conn = postgres_service._get_connection()
+            conn.autocommit = True
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute("listen autoliquid_fila_updates")
+                    for notify in conn.notifies(timeout=30):
+                        try:
+                            payload = json.loads(notify.payload or "{}")
+                        except Exception:
+                            payload = {"type": "fila-atualizada"}
+                        _broadcast_fila_event(payload)
+        except Exception:
+            log.exception("Falha no listener em tempo real da fila")
+            time.sleep(3)
+
+
+def _ensure_fila_event_listener() -> None:
+    global FILA_EVENT_LISTENER_STARTED
+    if FILA_EVENT_LISTENER_STARTED:
+        return
+    with FILA_EVENT_LISTENER_LOCK:
+        if FILA_EVENT_LISTENER_STARTED:
+            return
+        thread = Thread(target=_fila_event_listener_loop, name="fila-event-listener", daemon=True)
+        thread.start()
+        FILA_EVENT_LISTENER_STARTED = True
+
+
+def _carregar_snapshot_fila_postgres() -> dict[str, Any]:
+    global FILA_PROCESSOS_CACHE
+
+    snapshot_db = _postgres_service().obter_fila_processos_snapshot_atual(garantir_schema=False)
+    rows_db = snapshot_db["rows"]
+    columns_db = _colunas_fila(rows_db)
+    FILA_PROCESSOS_CACHE = {
+        "rows": rows_db,
+        "columns": columns_db,
+        "updatedAt": snapshot_db.get("updatedAt"),
+    }
+    _broadcast_fila_event(
+        {
+            "type": "fila-cache-atualizada",
+            "updatedAt": snapshot_db.get("updatedAt"),
+            "total": len(rows_db),
+            "origem": "postgres",
+        }
+    )
+    return {
+        "total": len(rows_db),
+        "columns": columns_db,
+        "rows": rows_db,
+        "updatedAt": snapshot_db.get("updatedAt"),
+        "source": "postgres",
+    }
+
+
+def _snapshot_fila_future():
+    global FILA_SNAPSHOT_FUTURE
+    with FILA_SNAPSHOT_FUTURE_LOCK:
+        if FILA_SNAPSHOT_FUTURE is None or FILA_SNAPSHOT_FUTURE.done():
+            FILA_SNAPSHOT_FUTURE = FILA_SNAPSHOT_EXECUTOR.submit(_carregar_snapshot_fila_postgres)
+        return FILA_SNAPSHOT_FUTURE
+
+
+def _normalizar_servidores_sorteio(rows: list[Any]) -> list[dict[str, str]]:
+    servidores: list[dict[str, str]] = []
+    for index, item in enumerate(rows or []):
+        if isinstance(item, BaseModel):
+            item = item.model_dump()
+        if not isinstance(item, dict):
+            continue
+        nome = str(item.get("nome") or "").strip()
+        modo = str(item.get("modo") or "ativo").strip().lower()
+        if modo not in {"ativo", "metade", "fora"}:
+            modo = "ativo"
+        servidor_id = str(item.get("id") or "").strip()
+        if not servidor_id:
+            servidor_id = f"server-{index + 1}"
+        servidores.append({"id": servidor_id, "nome": nome, "modo": modo})
+    return servidores
+
+
+def _salvar_alerta_fila_background(
+    numero_processo: str,
+    sol_pagamento: str,
+    mensagem: str,
+) -> None:
+    try:
+        _postgres_service().salvar_alerta_fila(
+            numero_processo=numero_processo,
+            sol_pagamento=sol_pagamento,
+            mensagem=mensagem,
+        )
+    except Exception:
+        log.exception("Falha ao salvar alerta da fila em segundo plano")
 
 
 
@@ -175,6 +315,12 @@ class WebConfigPayload(BaseModel):
     temaWeb: str = "light"
     nivelLog: str = "desenvolvedor"
     databaseUrl: str = ""
+    nomeUsuario: str = ""
+    nfServicoAlertaDiasUteis: int = 3
+    rocketChatUrl: str = "https://chat.ufsc.br"
+    rocketChatUserId: str = ""
+    rocketChatAuthToken: str = ""
+    rocketChatContar: str = "tudo"
 
 
 class ChromeOpenResponse(BaseModel):
@@ -202,6 +348,42 @@ class ExecucaoPayload(BaseModel):
 class ProcessDatesPayload(BaseModel):
     apuracao: str = ""
     vencimento: str = ""
+
+
+class FilaProcessosResponse(BaseModel):
+    total: int
+    columns: list[str]
+    rows: list[dict[str, Any]]
+    updatedAt: str | None = None
+    source: str = "solar-headless"
+
+
+class FilaResponsavelPayload(BaseModel):
+    numeroProcesso: str = ""
+    solPagamento: str = ""
+    responsavel: str = ""
+
+
+class FilaAlertaPayload(BaseModel):
+    numeroProcesso: str = ""
+    solPagamento: str = ""
+    mensagem: str = ""
+
+
+class FilaConclusaoPayload(BaseModel):
+    numeroProcesso: str = ""
+    solPagamento: str = ""
+    concluido: bool = False
+
+
+class QueueServerPayload(BaseModel):
+    id: str = ""
+    nome: str = ""
+    modo: str = "ativo"
+
+
+class QueueServersPayload(BaseModel):
+    servidores: list[QueueServerPayload] = []
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -233,6 +415,13 @@ def _brl_para_float(s: str) -> float:
             return float(txt.replace(".", "").replace(",", "."))
     except Exception:
         return 0.0
+
+
+def _colunas_fila(rows: list[dict[str, Any]]) -> list[str]:
+    if not rows:
+        return []
+    first_row = rows[0]
+    return [str(key) for key in first_row.keys() if not str(key).startswith("__")]
 
 
 def _atualizar_etapa(doc: dict, etapa_id: int, status: str) -> None:
@@ -987,26 +1176,354 @@ def _executar_uma_etapa(
 # ─────────────────────────────────────────────────────────────────────────────
 
 @app.get("/api/health")
-def health() -> dict[str, str]:
+async def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
 @app.get("/api/status")
-def status_backend() -> dict[str, Any]:
-    chrome_service = _chrome_service()
-    postgres_service = _postgres_service()
+async def status_backend() -> dict[str, Any]:
     porta = obter_porta_chrome()
-    aberto = chrome_service.chrome_esta_aberto(porta)
+    aberto = False
+
+    try:
+        # Endpoint de abertura do app: resposta precisa ser quase instantânea.
+        with socket.create_connection(("127.0.0.1", porta), timeout=0.01):
+            aberto = True
+    except Exception:
+        aberto = False
+
     return {
         "chromeStatus": "pronto" if aberto else "erro",
         "chromePorta": porta,
-        "postgresEnabled": postgres_service.postgres_habilitado(),
+        "postgresEnabled": bool(str(os.getenv("DATABASE_URL") or "").strip()),
     }
 
 
 @app.get("/api/dashboard")
-def dashboard(periodo: str = Query(default="semana")) -> dict[str, Any]:
-    return _postgres_service().obter_dashboard(periodo)
+def dashboard(
+    periodo: str = Query(default="semana"),
+    servidor_nome: str = Query(default=""),
+) -> dict[str, Any]:
+    return _postgres_service().obter_dashboard(periodo, servidor_nome=servidor_nome)
+
+
+@app.get("/api/dashboard/historico")
+def dashboard_historico(
+    empresa: str = Query(default=""),
+    contrato: str = Query(default=""),
+    servidor: str = Query(default=""),
+    periodo: str = Query(default="semana"),
+) -> dict[str, Any]:
+    return _postgres_service().obter_dashboard_historico(
+        empresa=empresa,
+        contrato=contrato,
+        servidor=servidor,
+        periodo=periodo,
+    )
+
+
+@app.get("/api/fila-processos")
+def fila_processos(refresh: bool = Query(default=False)) -> dict[str, Any]:
+    """
+    Retorna a fila de processos do Solar para o painel web.
+    Quando `refresh=true`, força nova coleta via script headless.
+    """
+    global FILA_PROCESSOS_CACHE, FILA_SNAPSHOT_DB_RETRY_AFTER
+
+    if not refresh:
+        if FILA_PROCESSOS_CACHE["rows"]:
+            return {
+                "total": len(FILA_PROCESSOS_CACHE["rows"]),
+                "columns": FILA_PROCESSOS_CACHE["columns"],
+                "rows": FILA_PROCESSOS_CACHE["rows"],
+                "updatedAt": FILA_PROCESSOS_CACHE["updatedAt"],
+                "source": "cache",
+            }
+
+        try:
+            postgres_service = _postgres_service()
+            if time.monotonic() >= FILA_SNAPSHOT_DB_RETRY_AFTER and postgres_service.postgres_habilitado():
+                return _snapshot_fila_future().result(timeout=0.5)
+        except TimeoutError:
+            return {
+                "total": 0,
+                "columns": [],
+                "rows": [],
+                "updatedAt": None,
+                "source": "postgres-loading",
+            }
+        except Exception as exc:
+            FILA_SNAPSHOT_DB_RETRY_AFTER = time.monotonic() + 30
+            log.warning("Falha ao carregar snapshot da fila no PostgreSQL: %s", exc)
+
+        return {
+            "total": 0,
+            "columns": [],
+            "rows": [],
+            "updatedAt": None,
+            "source": "empty",
+        }
+
+    try:
+        chrome_service = _chrome_service()
+        porta = obter_porta_chrome()
+        if not chrome_service.chrome_esta_pronto(porta):
+            chrome_service.abrir_chrome(porta, aguardar=True, timeout_s=20)
+
+        from scripts.solar_fila_headless import SolarFilaConfig, SolarFilaExtractor
+
+        config = SolarFilaConfig(
+            headless=True,
+            timeout_ms=60000,
+            username=os.getenv("SOLAR_USERNAME"),
+            password=os.getenv("SOLAR_PASSWORD"),
+            filters={},
+        )
+        dataframe = SolarFilaExtractor(config).extract()
+        updated_at = datetime.now().isoformat(timespec="seconds")
+        rows = dataframe.to_dict(orient="records")
+        rows = _postgres_service().salvar_snapshot_fila_processos(
+            rows,
+            updated_at=updated_at,
+            origem="solar-headless",
+        )
+        columns = _colunas_fila(rows)
+
+        FILA_PROCESSOS_CACHE = {
+            "rows": rows,
+            "columns": columns,
+            "updatedAt": updated_at,
+        }
+
+        return {
+            "total": len(rows),
+            "columns": columns,
+            "rows": rows,
+            "updatedAt": updated_at,
+            "source": "solar-headless",
+        }
+    except Exception as exc:
+        if FILA_PROCESSOS_CACHE["rows"]:
+            return {
+                "total": len(FILA_PROCESSOS_CACHE["rows"]),
+                "columns": FILA_PROCESSOS_CACHE["columns"],
+                "rows": FILA_PROCESSOS_CACHE["rows"],
+                "updatedAt": FILA_PROCESSOS_CACHE["updatedAt"],
+                "source": "cache-fallback",
+                "erro": str(exc),
+            }
+        raise HTTPException(
+            status_code=503,
+            detail=f"Não foi possível carregar a fila de processos no momento: {exc}",
+        ) from exc
+
+
+@app.get("/api/fila-processos/servidores-sorteio")
+def obter_servidores_sorteio() -> dict[str, Any]:
+    try:
+        rows = _postgres_service().obter_servidores_sorteio()
+    except Exception as exc:
+        log.warning("Falha ao carregar servidores do sorteio no PostgreSQL: %s", exc)
+        rows = None
+    servidores = _normalizar_servidores_sorteio(rows or [])
+    return {
+        "servidores": servidores,
+        "source": "postgres" if rows is not None else "empty",
+    }
+
+
+@app.put("/api/fila-processos/servidores-sorteio")
+def salvar_servidores_sorteio(payload: QueueServersPayload) -> dict[str, Any]:
+    servidores = _normalizar_servidores_sorteio(payload.servidores)
+    try:
+        _postgres_service().salvar_servidores_sorteio(servidores)
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Não foi possível salvar os servidores do sorteio no Supabase: {exc}",
+        ) from exc
+    _broadcast_fila_event({"type": "servidores-sorteio-atualizados"})
+    return {
+        "success": True,
+        "servidores": servidores,
+    }
+
+
+@app.get("/api/fila-processos/stream")
+async def fila_processos_stream(request: Request):
+    _ensure_fila_event_listener()
+
+    subscriber: Queue[str] = Queue()
+    with FILA_EVENT_SUBSCRIBERS_LOCK:
+        FILA_EVENT_SUBSCRIBERS.add(subscriber)
+
+    async def event_generator():
+        ultimo_keepalive = time.monotonic()
+        try:
+            yield "event: ready\ndata: {\"type\":\"ready\"}\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    mensagem = subscriber.get_nowait()
+                    yield f"event: fila\ndata: {mensagem}\n\n"
+                except Empty:
+                    if time.monotonic() - ultimo_keepalive >= 15:
+                        ultimo_keepalive = time.monotonic()
+                        yield ": keepalive\n\n"
+                    await asyncio.sleep(0.5)
+        finally:
+            with FILA_EVENT_SUBSCRIBERS_LOCK:
+                FILA_EVENT_SUBSCRIBERS.discard(subscriber)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.put("/api/fila-processos/responsavel")
+def atualizar_responsavel_fila(payload: FilaResponsavelPayload) -> dict[str, Any]:
+    global FILA_PROCESSOS_CACHE
+
+    numero_processo = str(payload.numeroProcesso or "").strip()
+    sol_pagamento = str(payload.solPagamento or "").strip()
+    responsavel = str(payload.responsavel or "").strip()
+    if not numero_processo and not sol_pagamento:
+        raise HTTPException(
+            status_code=422,
+            detail="Informe ao menos o número do processo ou a solicitação de pagamento.",
+        )
+
+    alterado_em = _postgres_service().salvar_responsavel_fila(
+        numero_processo=numero_processo,
+        sol_pagamento=sol_pagamento,
+        responsavel=responsavel,
+    )
+    autor = str(os.getenv("AUTO_LIQUID_NOME") or os.getenv("USER") or os.getenv("USERNAME") or "").strip()
+
+    row_key = f"{numero_processo}::{sol_pagamento}"
+    updated_rows: list[dict[str, Any]] = []
+    for row in FILA_PROCESSOS_CACHE.get("rows", []) or []:
+        current_key = f"{str(row.get('Número Processo') or '').strip()}::{str(row.get('Sol. Pagamento') or '').strip()}"
+        if current_key == row_key:
+            next_row = dict(row)
+            next_row["__responsavel_manual"] = responsavel
+            next_row["__responsavel_alterado"] = "1" if responsavel else ""
+            next_row["__responsavel_alterado_por"] = autor if responsavel else ""
+            next_row["__responsavel_alterado_em"] = alterado_em if responsavel else ""
+            updated_rows.append(next_row)
+        else:
+            updated_rows.append(row)
+
+    if updated_rows:
+        FILA_PROCESSOS_CACHE["rows"] = updated_rows
+        FILA_PROCESSOS_CACHE["columns"] = _colunas_fila(updated_rows)
+
+    return {
+        "success": True,
+        "responsavel": responsavel,
+        "alteradoPor": autor,
+        "alteradoEm": alterado_em,
+    }
+
+
+@app.post("/api/fila-processos/alertas")
+def adicionar_alerta_fila(payload: FilaAlertaPayload, background_tasks: BackgroundTasks) -> dict[str, Any]:
+    global FILA_PROCESSOS_CACHE
+
+    numero_processo = str(payload.numeroProcesso or "").strip()
+    sol_pagamento = str(payload.solPagamento or "").strip()
+    mensagem = str(payload.mensagem or "").strip()
+    if not numero_processo and not sol_pagamento:
+        raise HTTPException(
+            status_code=422,
+            detail="Informe ao menos o número do processo ou a solicitação de pagamento.",
+        )
+    if not mensagem:
+        raise HTTPException(status_code=422, detail="Informe uma mensagem para o alerta.")
+
+    autor = str(os.getenv("AUTO_LIQUID_NOME") or os.getenv("USER") or os.getenv("USERNAME") or "").strip()
+    alerta = {
+        "id": -int(time.time() * 1000),
+        "mensagem": mensagem,
+        "autor": autor,
+        "criadoEm": datetime.now().isoformat(timespec="minutes"),
+    }
+    background_tasks.add_task(
+        _salvar_alerta_fila_background,
+        numero_processo,
+        sol_pagamento,
+        mensagem,
+    )
+
+    row_key = f"{numero_processo}::{sol_pagamento}"
+    updated_rows: list[dict[str, Any]] = []
+    for row in FILA_PROCESSOS_CACHE.get("rows", []) or []:
+        current_key = f"{str(row.get('Número Processo') or '').strip()}::{str(row.get('Sol. Pagamento') or '').strip()}"
+        if current_key == row_key:
+            next_row = dict(row)
+            try:
+                alertas = json.loads(str(next_row.get("__alertas_json") or "[]"))
+            except Exception:
+                alertas = []
+            alertas = [alerta, *alertas]
+            next_row["__alertas_json"] = json.dumps(alertas, ensure_ascii=False)
+            updated_rows.append(next_row)
+        else:
+            updated_rows.append(row)
+
+    if updated_rows:
+        FILA_PROCESSOS_CACHE["rows"] = updated_rows
+        FILA_PROCESSOS_CACHE["columns"] = _colunas_fila(updated_rows)
+
+    return {
+        "success": True,
+        "alerta": alerta,
+    }
+
+
+@app.put("/api/fila-processos/conclusao")
+def atualizar_conclusao_fila(payload: FilaConclusaoPayload) -> dict[str, Any]:
+    global FILA_PROCESSOS_CACHE
+
+    numero_processo = str(payload.numeroProcesso or "").strip()
+    sol_pagamento = str(payload.solPagamento or "").strip()
+    if not numero_processo and not sol_pagamento:
+        raise HTTPException(
+            status_code=422,
+            detail="Informe ao menos o número do processo ou a solicitação de pagamento.",
+        )
+
+    result = _postgres_service().salvar_conclusao_fila(
+        numero_processo=numero_processo,
+        sol_pagamento=sol_pagamento,
+        concluido=bool(payload.concluido),
+    )
+
+    row_key = f"{numero_processo}::{sol_pagamento}"
+    updated_rows: list[dict[str, Any]] = []
+    for row in FILA_PROCESSOS_CACHE.get("rows", []) or []:
+        current_key = f"{str(row.get('Número Processo') or '').strip()}::{str(row.get('Sol. Pagamento') or '').strip()}"
+        if current_key == row_key:
+            next_row = dict(row)
+            next_row["__concluido"] = "1" if result.get("concluido") else ""
+            next_row["__concluido_por"] = str(result.get("concluidoPor") or "")
+            next_row["__concluido_em"] = str(result.get("concluidoEm") or "")
+            updated_rows.append(next_row)
+        else:
+            updated_rows.append(row)
+
+    if updated_rows:
+        FILA_PROCESSOS_CACHE["rows"] = updated_rows
+        FILA_PROCESSOS_CACHE["columns"] = _colunas_fila(updated_rows)
+
+    return {"success": True, **result}
 
 
 @app.post("/api/chrome/abrir")
@@ -1014,15 +1531,15 @@ def abrir_chrome_endpoint() -> dict[str, Any]:
     chrome_service = _chrome_service()
     porta = obter_porta_chrome()
     try:
-        if not chrome_service.chrome_esta_aberto(porta):
+        if not chrome_service.chrome_esta_pronto(porta):
             chrome_service.abrir_chrome(porta, aguardar=True, timeout_s=15)
-        aberto = chrome_service.chrome_esta_aberto(porta)
+        aberto = chrome_service.chrome_esta_pronto(porta)
         return {
             "success": aberto,
             "chromeStatus": "pronto" if aberto else "erro",
             "chromePorta": porta,
             "url": URL_INICIAL,
-            "mensagem": "Chrome pronto." if aberto else "Chrome não respondeu na porta esperada.",
+            "mensagem": "Chrome pronto." if aberto else "Chrome não ficou pronto para automação na porta esperada.",
         }
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -1376,6 +1893,12 @@ def parar_execucao(doc_id: str) -> dict[str, Any]:
     return {**resultado, "success": True, "mensagem": "Solicitação de parada enviada."}
 
 
+@app.get("/api/datas-globais")
+def datas_globais_get() -> dict[str, str]:
+    """Retorna as datas globais configuradas no Supabase (somente leitura para o servidor)."""
+    return _postgres_service().obter_datas_globais()
+
+
 @app.get("/api/process-dates")
 def process_dates() -> dict[str, str]:
     dados = obter_datas_salvas()
@@ -1405,6 +1928,90 @@ def salvar_configuracoes(payload: WebConfigPayload) -> dict[str, Any]:
         return _web_config_service().salvar_configuracoes_web(payload.model_dump())
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/rocketchat/notificacoes")
+def notificacoes_rocket_chat() -> dict[str, Any]:
+    cfg = _web_config_service().carregar_configuracoes_web()
+    base_url = str(cfg.get("rocketChatUrl") or "").strip().rstrip("/")
+    if base_url and not base_url.startswith(("http://", "https://")):
+        base_url = f"https://{base_url}"
+    user_id = str(cfg.get("rocketChatUserId") or "").strip()
+    auth_token = str(cfg.get("rocketChatAuthToken") or "").strip()
+    contar = str(cfg.get("rocketChatContar") or "tudo").strip().lower()
+
+    if not base_url or not user_id or not auth_token:
+        return {
+            "configured": False,
+            "unread": 0,
+            "mentions": 0,
+            "count": 0,
+            "rooms": [],
+            "message": "Rocket.Chat não configurado.",
+        }
+
+    try:
+        url = f"{base_url}/api/v1/subscriptions.get"
+        response = requests.get(
+            url,
+            headers={
+                "X-User-Id": user_id,
+                "X-Auth-Token": auth_token,
+            },
+            timeout=4,
+        )
+        if response.status_code in {401, 403}:
+            raise HTTPException(status_code=401, detail="Token do Rocket.Chat inválido ou expirado.")
+        if response.status_code == 404:
+            raise HTTPException(status_code=404, detail=f"Endpoint do Rocket.Chat não encontrado: {url}")
+        response.raise_for_status()
+        payload = response.json()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Falha ao consultar Rocket.Chat: {exc}") from exc
+
+    subscriptions = payload.get("update") or payload.get("subscriptions") or []
+    if not isinstance(subscriptions, list):
+        subscriptions = []
+
+    rooms: list[dict[str, Any]] = []
+    total_unread = 0
+    total_mentions = 0
+
+    def _as_int(value: Any) -> int:
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    for item in subscriptions:
+        if not isinstance(item, dict):
+            continue
+        unread = _as_int(item.get("unread"))
+        mentions = _as_int(item.get("userMentions"))
+        if unread <= 0 and mentions <= 0:
+            continue
+        total_unread += max(unread, 0)
+        total_mentions += max(mentions, 0)
+        rooms.append(
+            {
+                "id": item.get("rid") or item.get("_id") or "",
+                "name": item.get("name") or item.get("fname") or "",
+                "type": item.get("t") or "",
+                "unread": unread,
+                "mentions": mentions,
+            }
+        )
+
+    count = total_mentions if contar == "mencoes" else total_unread
+    return {
+        "configured": True,
+        "unread": total_unread,
+        "mentions": total_mentions,
+        "count": count,
+        "rooms": rooms[:20],
+    }
 
 
 _MODULOS_AUTOMACAO = [
@@ -1472,6 +2079,99 @@ def atualizar_tabela_web(table_key: str, payload: TableSaveRequest) -> dict[str,
     if table_key not in _web_config_service().TABLE_DEFINITIONS:
         raise HTTPException(status_code=404, detail="Tabela não encontrada.")
     return _web_config_service().salvar_tabela_web(table_key, payload.rows)
+
+
+@app.post("/api/contratos/lookup-ic")
+def lookup_ic_por_sarf(body: dict[str, Any]) -> dict[str, Any]:
+    """Dado uma lista de números SARF (contrato), retorna o IG (IC) correspondente.
+
+    Retorna {"resultado": {"sarf": "ig" | null}} onde null = não cadastrado.
+    """
+    sarfs: list[str] = [str(s).strip() for s in (body.get("sarfs") or []) if str(s).strip()]
+    if not sarfs:
+        return {"resultado": {}}
+
+    rows = _web_config_service()._load_contract_rows()
+    # Índice normalizado: sarf_upper → ig
+    indice: dict[str, str] = {}
+    for row in rows:
+        sarf_key = str(row.get("sarf") or "").strip().upper()
+        ig_val = str(row.get("ig") or "").strip()
+        if sarf_key:
+            indice[sarf_key] = ig_val
+
+    resultado: dict[str, str | None] = {}
+    for sarf in sarfs:
+        ig = indice.get(sarf.upper())
+        resultado[sarf] = ig if ig else None
+
+    return {"resultado": resultado}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AUSÊNCIAS / SERVIDORES CONFIG
+# ─────────────────────────────────────────────────────────────────────────────
+
+@app.get("/api/ausencias")
+def listar_ausencias() -> dict[str, Any]:
+    try:
+        rows = _postgres_service().listar_ausencias()
+        return {"ausencias": rows}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/ausencias")
+def criar_ausencia(body: dict[str, Any]) -> dict[str, Any]:
+    required = {"id", "servidor", "tipo", "inicio", "fim"}
+    missing = required - set(body.keys())
+    if missing:
+        raise HTTPException(status_code=422, detail=f"Campos obrigatórios: {missing}")
+    try:
+        return _postgres_service().criar_ausencia(body)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/ausencias/{ausencia_id}")
+def deletar_ausencia(ausencia_id: str) -> dict[str, Any]:
+    try:
+        ok = _postgres_service().deletar_ausencia(ausencia_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail="Ausência não encontrada.")
+        return {"ok": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/servidores-config")
+def listar_servidores_config() -> dict[str, Any]:
+    try:
+        rows = _postgres_service().listar_servidores_config()
+        return {"servidores": rows}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/api/servidores-config/{nome}")
+def upsert_servidor_config(nome: str, body: dict[str, Any]) -> dict[str, Any]:
+    cor = str(body.get("cor") or "#6366f1").strip()
+    try:
+        _postgres_service().salvar_servidor_config(nome, cor)
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/servidores-config/{nome}")
+def deletar_servidor_config(nome: str) -> dict[str, Any]:
+    try:
+        _postgres_service().deletar_servidor_config(nome)
+        return {"ok": True}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1632,9 +2332,8 @@ def consultar_simples(body: dict[str, Any]) -> dict[str, Any]:
     Consulta nome + optante Simples Nacional.
 
     Ordem de prioridade:
-      1. Cache em memória (mesmo processo Python, TTL 1 h)
-      2. Supabase — histórico de processos anteriores (instantâneo)
-      3. APIs externas: BrasilAPI / cnpj.ws / receitaws (até 2 tentativas)
+      1. Cache em memória (TTL 1 h)
+      2. BrasilAPI (resposta em ~1 s)
     """
     import core.consulta_cnpj as _cnpj_mod
 
@@ -1643,10 +2342,10 @@ def consultar_simples(body: dict[str, Any]) -> dict[str, Any]:
     if len(cnpj_limpo) != 14:
         raise HTTPException(status_code=422, detail="CNPJ deve ter 14 dígitos.")
 
-    # ── 1. Cache em memória ───────────────────────────────────────────────────
+    # ── 1. Cache em memória (TTL 1 h) ────────────────────────────────────────
     cached = _cnpj_mod._cache_get(cnpj_limpo)
     if cached is not None:
-        print(f"  /simples: cache memória hit para {cnpj_limpo}")
+        print(f"  /simples: cache hit para {cnpj_limpo}")
         return {
             "cnpj": cnpj_limpo,
             "razaoSocial": cached.get("razao_social") or "",
@@ -1654,67 +2353,87 @@ def consultar_simples(body: dict[str, Any]) -> dict[str, Any]:
             "fonte": "cache",
         }
 
-    # ── 2. Supabase — histórico de processos (com TTL de 30 dias) ────────────
-    ps = _postgres_service()
-    db_resultado = None
-    if ps.postgres_habilitado():
-        try:
-            db_resultado = ps.consultar_simples_por_cnpj(cnpj_limpo)
-        except Exception:
-            pass
-
-    if (
-        db_resultado is not None
-        and db_resultado.get("optante_simples") is not None
-        and not db_resultado.get("cache_expirado", True)
-    ):
-        razao = db_resultado.get("razao_social") or ""
-        optante = db_resultado["optante_simples"]
-        print(f"  /simples: Supabase hit {cnpj_limpo} → Simples={optante} (cache válido)")
-        _cnpj_mod._cache_set(cnpj_limpo, {"razao_social": razao, "optante_simples": optante})
-        return {
-            "cnpj": cnpj_limpo,
-            "razaoSocial": razao,
-            "optanteSimples": optante,
-            "fonte": "historico",
-        }
-
-    # ── 3. APIs externas (cache expirado ou CNPJ novo) ────────────────────────
+    # ── 2. BrasilAPI ─────────────────────────────────────────────────────────
     dados = _cnpj_mod.obter_dados_empresa(cnpj_limpo)
 
-    # Se as APIs falharam mas temos razão social no DB, retorna o que temos
-    if dados.get("nao_encontrado") and db_resultado is None:
+    if dados.get("nao_encontrado"):
         raise HTTPException(status_code=404, detail="CNPJ não encontrado na base da Receita Federal.")
-
-    optante = dados.get("optante_simples")
-    razao   = dados.get("razao_social") or (db_resultado or {}).get("razao_social") or ""
-
-    # Se as APIs não retornaram optante mas o DB tem um valor (mesmo expirado),
-    # usa o valor antigo como fallback e avisa que está desatualizado
-    if optante is None and db_resultado is not None and db_resultado.get("optante_simples") is not None:
-        optante = db_resultado["optante_simples"]
-        if not razao:
-            razao = db_resultado.get("razao_social") or ""
-        return {
-            "cnpj": cnpj_limpo,
-            "razaoSocial": razao,
-            "optanteSimples": optante,
-            "fonte": "historico_expirado",  # aviso: dado antigo, re-verificar
-        }
-
-    # Persiste no Supabase para próximas consultas
-    if optante is not None and ps.postgres_habilitado():
-        try:
-            ps.salvar_simples_cnpj(cnpj_limpo, razao, optante)
-        except Exception:
-            pass
 
     return {
         "cnpj": cnpj_limpo,
-        "razaoSocial": razao,
-        "optanteSimples": optante,
+        "razaoSocial": dados.get("razao_social") or "",
+        "optanteSimples": dados.get("optante_simples"),
         "fonte": "api",
     }
+
+
+@app.post("/api/cnpj/simples-batch")
+def simples_batch(body: dict[str, Any]) -> dict[str, Any]:
+    """
+    Consulta status Simples Nacional de múltiplos CNPJs diretamente na BrasilAPI.
+
+    Prioridade por CNPJ:
+      1. Cache em memória (TTL 1 h) — evita chamadas repetidas na mesma sessão
+      2. BrasilAPI — chamadas paralelas (até 5 simultâneas)
+
+    Retorna resultado[cnpj_limpo] = True | False | None
+      True  → optante pelo Simples Nacional
+      False → não optante
+      None  → não encontrado / erro (ex: CNPJ de órgão federal)
+    """
+    import core.consulta_cnpj as _cnpj_mod
+    from concurrent.futures import ThreadPoolExecutor, as_completed as _as_completed
+
+    cnpjs_raw = body.get("cnpjs", [])
+    if not isinstance(cnpjs_raw, list):
+        raise HTTPException(status_code=422, detail="'cnpjs' deve ser uma lista de strings.")
+
+    # Normaliza e deduplica
+    cnpjs_limpos: list[str] = list({
+        c for cnpj in cnpjs_raw
+        if len(c := "".join(d for d in str(cnpj) if d.isdigit())) == 14
+    })
+    if not cnpjs_limpos:
+        return {"resultado": {}}
+
+    resultado: dict[str, bool | None] = {}
+
+    # ── 1. Cache em memória ────────────────────────────────────────────────────
+    pendentes: list[str] = []
+    for cnpj in cnpjs_limpos:
+        cached = _cnpj_mod._cache_get(cnpj)
+        if cached is not None:
+            optante = cached.get("optante_simples")
+            resultado[cnpj] = bool(optante) if optante is not None else None
+        else:
+            pendentes.append(cnpj)
+
+    # ── 2. BrasilAPI (paralelo, até 5 simultâneos) ────────────────────────────
+    # Não usa cache do Supabase — dados do Simples Nacional mudam e precisam
+    # sempre vir da BrasilAPI para garantir atualidade.
+    if pendentes:  # noqa: SIM102
+        def _consultar_um(cnpj: str) -> tuple[str, bool | None]:
+            try:
+                dados = _cnpj_mod.obter_dados_empresa(cnpj)
+                if dados.get("nao_encontrado"):
+                    return cnpj, None
+                optante = dados.get("optante_simples")
+                return cnpj, bool(optante) if optante is not None else None
+            except Exception:
+                log.debug("simples-batch: falha ao consultar CNPJ %s", cnpj)
+                return cnpj, None
+
+        max_workers = min(5, len(pendentes))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(_consultar_um, cnpj): cnpj for cnpj in pendentes}
+            for future in _as_completed(futures, timeout=60):
+                try:
+                    cnpj, optante = future.result(timeout=30)
+                    resultado[cnpj] = optante
+                except Exception:
+                    resultado[futures[future]] = None
+
+    return {"resultado": resultado}
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1722,18 +2441,19 @@ def consultar_simples(body: dict[str, Any]) -> dict[str, Any]:
 # ─────────────────────────────────────────────────────────────────────────────
 
 class HistoricoBuscaPayload(BaseModel):
-    cnpj: str
+    cnpj: str = ""
     contrato: str = ""
+    empenho: str = ""
+    numero_processo: str = ""
     limite: int = 40
 
 
 @app.post("/api/historico/buscar")
 def buscar_historico(payload: HistoricoBuscaPayload) -> dict[str, Any]:
-    """Busca histórico de processos por CNPJ (+ contrato opcional) no Supabase."""
-    cnpj_limpo = "".join(c for c in payload.cnpj if c.isdigit())
-    if len(cnpj_limpo) != 14:
-        raise HTTPException(status_code=422, detail="CNPJ deve ter 14 dígitos.")
-
+    """
+    Busca histórico de processos no Supabase.
+    Aceita busca por CNPJ (+ contrato opcional), contrato, empenho ou número do processo.
+    """
     ps = _postgres_service()
     if not ps.postgres_habilitado():
         raise HTTPException(
@@ -1741,8 +2461,43 @@ def buscar_historico(payload: HistoricoBuscaPayload) -> dict[str, Any]:
             detail="Banco de dados não configurado. Verifique a variável DATABASE_URL.",
         )
 
-    contrato = payload.contrato.strip() or None
     limite = max(1, min(payload.limite, 100))
+
+    # ── Busca por número do processo ─────────────────────────────────────────
+    if payload.numero_processo.strip():
+        try:
+            processos = ps.buscar_historico_por_numero_processo(
+                payload.numero_processo.strip(), limite
+            )
+        except Exception as exc:
+            log.exception("Erro ao buscar histórico por número do processo")
+            raise HTTPException(status_code=500, detail=f"Erro interno: {exc}") from exc
+        return {"numero_processo": payload.numero_processo.strip(), "total": len(processos), "processos": processos}
+
+    # ── Busca por empenho ────────────────────────────────────────────────────
+    empenho = payload.empenho.strip()
+    if empenho:
+        try:
+            processos = ps.buscar_historico_por_empenho(empenho, limite)
+        except Exception as exc:
+            log.exception("Erro ao buscar histórico por empenho")
+            raise HTTPException(status_code=500, detail=f"Erro interno: {exc}") from exc
+        return {"empenho": empenho, "total": len(processos), "processos": processos}
+
+    # ── Busca somente por contrato ───────────────────────────────────────────
+    contrato = payload.contrato.strip() or None
+    if contrato and not payload.cnpj.strip():
+        try:
+            processos = ps.buscar_historico_por_contrato(contrato, limite)
+        except Exception as exc:
+            log.exception("Erro ao buscar histórico por contrato")
+            raise HTTPException(status_code=500, detail=f"Erro interno: {exc}") from exc
+        return {"contrato": contrato, "total": len(processos), "processos": processos}
+
+    # ── Busca por CNPJ ────────────────────────────────────────────────────────
+    cnpj_limpo = "".join(c for c in payload.cnpj if c.isdigit())
+    if len(cnpj_limpo) != 14:
+        raise HTTPException(status_code=422, detail="Informe um CNPJ, contrato, empenho ou número do processo.")
 
     try:
         processos = ps.buscar_historico_por_cnpj(cnpj_limpo, contrato, limite)
@@ -1750,12 +2505,7 @@ def buscar_historico(payload: HistoricoBuscaPayload) -> dict[str, Any]:
         log.exception("Erro ao buscar histórico de processos")
         raise HTTPException(status_code=500, detail=f"Erro interno: {exc}") from exc
 
-    return {
-        "cnpj": cnpj_limpo,
-        "contrato": contrato or "",
-        "total": len(processos),
-        "processos": processos,
-    }
+    return {"cnpj": cnpj_limpo, "contrato": contrato or "", "total": len(processos), "processos": processos}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

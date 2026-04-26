@@ -99,7 +99,7 @@ garantir_python() {
         exit 1
     fi
 
-    if ! "$PYTHON_BIN" -c "import fastapi, uvicorn, multipart" >/dev/null 2>&1; then
+    if ! "$PYTHON_BIN" -c "import fastapi, uvicorn, multipart, pandas" >/dev/null 2>&1; then
         echo "[py] Instalando dependencias Python..."
         "$PYTHON_BIN" -m pip install -r requirements.txt
     else

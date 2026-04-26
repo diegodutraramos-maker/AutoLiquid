@@ -19,7 +19,7 @@ from services.config_service import (
 
 log = logging.getLogger(__name__)
 
-WEB_THEME_VALUES = {"light", "dark"}
+WEB_THEME_VALUES = {"light", "dark", "system"}
 WEB_NIVEL_LOG_VALUES = {"desenvolvedor"}
 WEB_NAVEGADOR_VALUES = {"chrome", "edge"}
 
@@ -469,17 +469,33 @@ def _salvar_tabela_local(table_key: str, rows: list[dict[str, Any]]) -> None:
         _save_datas_impostos_rows(rows)
 
 
-def _carregar_tabela_remota(table_key: str) -> list[dict[str, str]] | None:
+# Sentinela interno: diferencia "erro de conexão" de "linha não existe no banco".
+# Isso evita que um erro temporário de leitura dispare um bootstrap que
+# sobrescreveria dados reais do Supabase com os defaults locais.
+class _ErroRemoto:
+    pass
+
+_ERRO_REMOTO = _ErroRemoto()
+
+
+def _carregar_tabela_remota(table_key: str) -> list[dict[str, str]] | None | _ErroRemoto:
+    """Retorna:
+    - list   → dados carregados do Supabase (pode ser [] se a linha existir vazia)
+    - None   → Postgres desabilitado OU linha ainda não existe (bootstrap seguro)
+    - _ERRO_REMOTO → falha de conexão/leitura (NÃO fazer bootstrap)
+    """
     if not postgres_service.postgres_habilitado():
         return None
     try:
         rows = postgres_service.obter_tabela_operacional(table_key)
         if rows is None:
+            # Linha não existe no banco — bootstrap é seguro
             return None
         return _normalize_table_rows(table_key, rows)
     except Exception:
         log.exception("Falha ao carregar tabela '%s' do PostgreSQL.", table_key)
-        return None
+        # Erro real: não retornar None para não disparar bootstrap acidental
+        return _ERRO_REMOTO
 
 
 def _salvar_tabela_remota(table_key: str, rows: list[dict[str, Any]]) -> bool:
@@ -499,12 +515,19 @@ def carregar_tabela_web(table_key: str, search: str = "") -> dict[str, Any]:
 
     definition = TABLE_DEFINITIONS[table_key]
     storage = "local"
-    rows = _carregar_tabela_remota(table_key)
-    if rows is None:
+    remoto = _carregar_tabela_remota(table_key)
+
+    if isinstance(remoto, _ErroRemoto):
+        # Erro de conexão: usa local SEM bootstrap para não sobrescrever dados no Supabase
+        rows = _carregar_tabela_local(table_key)
+        storage = "local"
+    elif remoto is None:
+        # Postgres desabilitado ou linha ainda não existe: bootstrap seguro
         rows = _carregar_tabela_local(table_key)
         if _salvar_tabela_remota(table_key, rows):
             storage = "postgres-bootstrap"
     else:
+        rows = remoto
         storage = "postgres"
 
     filtered_rows = _filter_rows(rows, search)
@@ -558,6 +581,12 @@ def carregar_configuracoes_web() -> dict[str, Any]:
         "nivelLog": nivel_log,
         "navegador": navegador,
         "databaseUrl": str(config.get("database_url") or ""),
+        "nomeUsuario": str(config.get("nome_usuario") or ""),
+        "nfServicoAlertaDiasUteis": int(config.get("nf_servico_alerta_dias_uteis", 3) or 0),
+        "rocketChatUrl": str(config.get("rocket_chat_url") or "https://chat.ufsc.br"),
+        "rocketChatUserId": str(config.get("rocket_chat_user_id") or ""),
+        "rocketChatAuthToken": str(config.get("rocket_chat_auth_token") or ""),
+        "rocketChatContar": str(config.get("rocket_chat_contar") or "tudo"),
     }
 
 
@@ -584,6 +613,21 @@ def salvar_configuracoes_web(dados: dict[str, Any]) -> dict[str, Any]:
         navegador = "chrome"
 
     database_url = str(dados.get("databaseUrl") or "").strip()
+    nome_usuario = str(dados.get("nomeUsuario") or "").strip()
+    rocket_chat_url = str(dados.get("rocketChatUrl") or "https://chat.ufsc.br").strip().rstrip("/")
+    if rocket_chat_url and not rocket_chat_url.startswith(("http://", "https://")):
+        rocket_chat_url = f"https://{rocket_chat_url}"
+    rocket_chat_user_id = str(dados.get("rocketChatUserId") or "").strip()
+    rocket_chat_auth_token = str(dados.get("rocketChatAuthToken") or "").strip()
+    rocket_chat_contar = str(dados.get("rocketChatContar") or "tudo").strip().lower()
+    if rocket_chat_contar not in {"tudo", "mencoes"}:
+        rocket_chat_contar = "tudo"
+    try:
+        nf_servico_alerta_dias_uteis = int(dados.get("nfServicoAlertaDiasUteis", 3) or 0)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Dias úteis do alerta de NF Serviço inválidos.") from exc
+    if not 0 <= nf_servico_alerta_dias_uteis <= 60:
+        raise ValueError("Dias úteis do alerta de NF Serviço devem ficar entre 0 e 60.")
 
     salvar_config_app(
         {
@@ -593,6 +637,12 @@ def salvar_configuracoes_web(dados: dict[str, Any]) -> dict[str, Any]:
             "tema_web": tema_web,
             "nivel_log": nivel_log,
             "database_url": database_url,
+            "nome_usuario": nome_usuario,
+            "nf_servico_alerta_dias_uteis": nf_servico_alerta_dias_uteis,
+            "rocket_chat_url": rocket_chat_url,
+            "rocket_chat_user_id": rocket_chat_user_id,
+            "rocket_chat_auth_token": rocket_chat_auth_token,
+            "rocket_chat_contar": rocket_chat_contar,
         }
     )
 
@@ -601,5 +651,10 @@ def salvar_configuracoes_web(dados: dict[str, Any]) -> dict[str, Any]:
         os.environ["DATABASE_URL"] = database_url
     elif "DATABASE_URL" in os.environ and not database_url:
         os.environ.pop("DATABASE_URL", None)
+
+    if nome_usuario:
+        os.environ["AUTO_LIQUID_NOME"] = nome_usuario
+    elif "AUTO_LIQUID_NOME" in os.environ:
+        os.environ.pop("AUTO_LIQUID_NOME", None)
 
     return carregar_configuracoes_web()

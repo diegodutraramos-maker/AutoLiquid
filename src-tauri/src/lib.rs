@@ -3,6 +3,7 @@ use std::{
     process::Command as StdCommand,
 };
 
+use tauri::{Manager, Theme, WebviewWindow};
 use tauri_plugin_shell::{
     process::CommandChild,
     process::CommandEvent,
@@ -246,16 +247,78 @@ fn prepare_windows_sidecar() {
     // conectar e o usuário ainda consegue reiniciar a aplicação normalmente.
 }
 
+// --- Suporte a ícone com tema (dark / light) ---
+
+fn icon_bytes_for_theme(theme: &Theme) -> &'static [u8] {
+    match theme {
+        Theme::Dark => include_bytes!("../icons/128x128@dark.png"),
+        _           => include_bytes!("../icons/128x128.png"),
+    }
+}
+
+fn apply_theme_icon(window: &WebviewWindow, theme: &Theme) {
+    let png_bytes = icon_bytes_for_theme(theme);
+    match image::load_from_memory(png_bytes) {
+        Ok(img) => {
+            // resize_exact garante que width*height == raw.len()/4 sempre
+            let rgba = img
+                .resize_exact(128, 128, image::imageops::FilterType::Lanczos3)
+                .into_rgba8();
+            let (width, height) = rgba.dimensions();
+            let raw = rgba.into_raw();
+            let icon = tauri::image::Image::new_owned(raw, width, height);
+            if let Err(e) = window.set_icon(icon) {
+                log::warn!("Falha ao trocar ícone do tema: {e}");
+            }
+        }
+        Err(e) => log::warn!("Falha ao decodificar ícone do tema: {e}"),
+    }
+}
+
+#[tauri::command]
+fn set_app_theme_icon(app: tauri::AppHandle, theme: String) -> Result<(), String> {
+    let window = app
+        .get_webview_window("main")
+        .ok_or_else(|| "janela principal não encontrada".to_string())?;
+
+    let normalized = theme.to_ascii_lowercase();
+    let selected_theme = match normalized.as_str() {
+        "dark" => Theme::Dark,
+        "light" => Theme::Light,
+        // Para "system" (ou valor inesperado), usa o tema atual da janela/SO.
+        _ => window.theme().unwrap_or(Theme::Light),
+    };
+
+    apply_theme_icon(&window, &selected_theme);
+    Ok(())
+}
+
+// -------------------------------------------------
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
+        .invoke_handler(tauri::generate_handler![set_app_theme_icon])
         .setup(|app| {
             app.handle().plugin(
                 tauri_plugin_log::Builder::default()
                     .level(log::LevelFilter::Info)
                     .build(),
             )?;
+
+            // Aplicar ícone conforme tema atual e escutar mudanças futuras
+            if let Some(window) = app.get_webview_window("main") {
+                let theme = window.theme().unwrap_or(Theme::Light);
+                apply_theme_icon(&window, &theme);
+
+                let win_clone = window.clone();
+                window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::ThemeChanged(theme) = event {
+                        apply_theme_icon(&win_clone, theme);
+                    }
+                });
+            }
 
             if cfg!(debug_assertions) {
                 let child = spawn_dev_api(app.handle());

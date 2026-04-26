@@ -1,6 +1,7 @@
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8000"
 const DEFAULT_API_TIMEOUT_MS = 10000
+const SAVE_PREENCHIMENTO_TIMEOUT_MS = 30000  // salvar-preenchimento faz sync com Supabase
 const EXECUTION_API_TIMEOUT_MS = 5 * 60 * 1000
 const PDF_PROCESS_TIMEOUT_MS = 2 * 60 * 1000
 const DEFAULT_API_STARTUP_TIMEOUT_MS = 60000
@@ -127,8 +128,30 @@ export interface AppSettings {
   chromePorta: number
   navegador: "chrome" | "edge"
   perguntarLimparMes: boolean
-  temaWeb: "light" | "dark"
+  temaWeb: "light" | "dark" | "system"
   nivelLog: "simples" | "desenvolvedor"
+  databaseUrl: string
+  nomeUsuario: string
+  nfServicoAlertaDiasUteis: number
+  rocketChatUrl: string
+  rocketChatUserId: string
+  rocketChatAuthToken: string
+  rocketChatContar: "tudo" | "mencoes"
+}
+
+export interface RocketChatNotifications {
+  configured: boolean
+  unread: number
+  mentions: number
+  count: number
+  rooms: Array<{
+    id: string
+    name: string
+    type: string
+    unread: number
+    mentions: number
+  }>
+  message?: string
 }
 
 export interface DocumentoProcessado {
@@ -194,6 +217,8 @@ export interface OpenChromeResponse {
 
 export interface DashboardProcessoRecente {
   numeroProcesso: string
+  fornecedor?: string
+  bruto?: number
   dataExecucao?: string | null
 }
 
@@ -203,6 +228,48 @@ export interface DashboardInfo {
   valorBruto: number
   quantidadeProcessos: number
   ultimosProcessos: DashboardProcessoRecente[]
+}
+
+export interface FilaProcessosInfo {
+  total: number
+  columns: string[]
+  rows: Record<string, string | number | null>[]
+  updatedAt?: string | null
+  source?: string
+  erro?: string
+}
+
+export interface SaveFilaResponsavelPayload {
+  numeroProcesso: string
+  solPagamento: string
+  responsavel: string
+}
+
+export interface SaveFilaConclusaoPayload {
+  numeroProcesso: string
+  solPagamento: string
+  concluido: boolean
+}
+
+export type QueueServerMode = "ativo" | "metade" | "fora"
+
+export interface QueueServerConfig {
+  id: string
+  nome: string
+  modo: QueueServerMode
+}
+
+export interface FilaAlerta {
+  id: number
+  mensagem: string
+  autor: string
+  criadoEm?: string | null
+}
+
+export interface SaveFilaAlertaPayload {
+  numeroProcesso: string
+  solPagamento: string
+  mensagem: string
 }
 
 export const MOCK_PROCESS_DATES: ProcessDates = {
@@ -338,7 +405,19 @@ async function apiFetch<T>(
 }
 
 export async function fetchBackendStatus(): Promise<BackendStatus> {
-  return apiFetch<BackendStatus>("/api/status")
+  try {
+    return await apiFetch<BackendStatus>("/api/status", undefined, { timeoutMs: 2000 })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : ""
+    if (message.includes("/api/status") && message.includes("não respondeu a tempo")) {
+      return {
+        chromeStatus: "erro",
+        chromePorta: 9222,
+        postgresEnabled: false,
+      }
+    }
+    throw error
+  }
 }
 
 export async function fetchBackendHealth(): Promise<{ status: string }> {
@@ -346,9 +425,93 @@ export async function fetchBackendHealth(): Promise<{ status: string }> {
 }
 
 export async function fetchDashboard(
-  periodo: "dia" | "semana" | "mes" | "este-mes" = "semana"
+  periodo: "dia" | "semana" | "mes" | "este-mes" = "semana",
+  servidorNome?: string
 ): Promise<DashboardInfo> {
-  return apiFetch<DashboardInfo>(`/api/dashboard?periodo=${encodeURIComponent(periodo)}`)
+  const params = new URLSearchParams({ periodo })
+  if (servidorNome) params.set("servidor_nome", servidorNome)
+  return apiFetch<DashboardInfo>(`/api/dashboard?${params.toString()}`)
+}
+
+export async function fetchFilaProcessos(
+  refresh = false
+): Promise<FilaProcessosInfo> {
+  const params = new URLSearchParams()
+  if (refresh) params.set("refresh", "true")
+  const suffix = params.toString() ? `?${params.toString()}` : ""
+  try {
+    return await apiFetch<FilaProcessosInfo>(`/api/fila-processos${suffix}`, undefined, {
+      timeoutMs: refresh ? 120000 : 8000,
+    })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : ""
+    if (message.includes("404") || message.toLowerCase().includes("not found")) {
+      throw new Error(
+        "O backend em execução ainda não possui o endpoint da fila. Reinicie a API para carregar a nova rota /api/fila-processos."
+      )
+    }
+    throw error
+  }
+}
+
+export async function saveFilaResponsavel(
+  payload: SaveFilaResponsavelPayload
+): Promise<{ success: boolean; responsavel: string; alteradoPor: string; alteradoEm?: string | null }> {
+  return apiFetch<{ success: boolean; responsavel: string; alteradoPor: string; alteradoEm?: string | null }>("/api/fila-processos/responsavel", {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function saveFilaAlerta(
+  payload: SaveFilaAlertaPayload
+): Promise<{ success: boolean; alerta: FilaAlerta | null }> {
+  return apiFetch<{ success: boolean; alerta: FilaAlerta | null }>("/api/fila-processos/alertas", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function saveFilaConclusao(
+  payload: SaveFilaConclusaoPayload
+): Promise<{ success: boolean; concluido: boolean; concluidoPor?: string; concluidoEm?: string | null }> {
+  return apiFetch<{ success: boolean; concluido: boolean; concluidoPor?: string; concluidoEm?: string | null }>("/api/fila-processos/conclusao", {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  })
+}
+
+export async function fetchQueueServersConfig(): Promise<{ servidores: QueueServerConfig[]; source?: string }> {
+  return apiFetch<{ servidores: QueueServerConfig[]; source?: string }>("/api/fila-processos/servidores-sorteio", undefined, {
+    timeoutMs: 6000,
+  })
+}
+
+export async function saveQueueServersConfig(
+  servidores: QueueServerConfig[]
+): Promise<{ success: boolean; servidores: QueueServerConfig[] }> {
+  return apiFetch<{ success: boolean; servidores: QueueServerConfig[] }>("/api/fila-processos/servidores-sorteio", {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ servidores }),
+  }, {
+    timeoutMs: 10000,
+  })
+}
+
+export function createFilaProcessosEventSource(): EventSource {
+  return new EventSource(`${API_BASE_URL}/api/fila-processos/stream`)
 }
 
 export async function waitForBackendReady(
@@ -395,7 +558,16 @@ export async function waitForBackendReady(
 
     try {
       await fetchBackendHealth()
-      const status = await fetchBackendStatus()
+      let status: BackendStatus
+      try {
+        status = await fetchBackendStatus()
+      } catch {
+        status = {
+          chromeStatus: "erro",
+          chromePorta: 9222,
+          postgresEnabled: false,
+        }
+      }
       onProgress?.({
         phase: "starting-api",
         title: "Serviços conectados",
@@ -429,6 +601,30 @@ export async function openChromeSession(): Promise<OpenChromeResponse> {
   return apiFetch<OpenChromeResponse>("/api/chrome/abrir", {
     method: "POST",
   })
+}
+
+export async function fetchDatasGlobais(): Promise<ProcessDates> {
+  return apiFetch<ProcessDates>("/api/datas-globais", undefined, { timeoutMs: 20000 })
+}
+
+export async function fetchSimplesBatch(
+  cnpjs: string[]
+): Promise<Record<string, boolean | null>> {
+  if (cnpjs.length === 0) return {}
+  try {
+    const data = await apiFetch<{ resultado: Record<string, boolean | null> }>(
+      "/api/cnpj/simples-batch",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cnpjs }),
+      },
+      { timeoutMs: 75000 }
+    )
+    return data.resultado ?? {}
+  } catch {
+    return {}
+  }
 }
 
 export async function fetchProcessDates(): Promise<ProcessDates> {
@@ -474,8 +670,116 @@ export async function saveTabela(
   })
 }
 
+export interface HistoricoDashboardData {
+  habilitado: boolean
+  total: number
+  totalValor: number
+  porServidor: { nome: string; count: number; valor: number }[]
+  porEmpresa: { nome: string; cnpj: string; count: number; valor: number }[]
+  porContrato: { contrato: string; count: number; valor: number }[]
+  porMes: { mes: string; count: number; valor: number }[]
+}
+
+export async function fetchDashboardHistorico(filters: {
+  empresa?: string
+  contrato?: string
+  servidor?: string
+  periodo?: string
+}): Promise<HistoricoDashboardData> {
+  const params = new URLSearchParams()
+  if (filters.empresa)  params.set("empresa",   filters.empresa)
+  if (filters.contrato) params.set("contrato",  filters.contrato)
+  if (filters.servidor) params.set("servidor",  filters.servidor)
+  if (filters.periodo)  params.set("periodo",   filters.periodo)
+  return apiFetch<HistoricoDashboardData>(`/api/dashboard/historico?${params.toString()}`)
+}
+
+/**
+ * Dado uma lista de números de contrato (SARF), retorna o IC (IG) correspondente
+ * de cada um a partir da tabela de contratos cadastrada.
+ * Contratos não encontrados terão valor null no mapa resultante.
+ */
+export async function fetchContratosIcLookup(
+  sarfs: string[]
+): Promise<Record<string, string | null>> {
+  if (sarfs.length === 0) return {}
+  try {
+    const data = await apiFetch<{ resultado: Record<string, string | null> }>(
+      "/api/contratos/lookup-ic",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sarfs }),
+      }
+    )
+    return data.resultado ?? {}
+  } catch {
+    return {}
+  }
+}
+
+// ── Ausências / Servidores Config ─────────────────────────────────────────────
+
+export interface AusenciaRemota {
+  id: string
+  servidor: string
+  tipo: "ferias" | "afastamento" | "licenca"
+  inicio: string // YYYY-MM-DD
+  fim: string    // YYYY-MM-DD
+  obs?: string | null
+}
+
+export interface ServidorConfigRemoto {
+  nome: string
+  cor: string
+}
+
+export async function fetchAusencias(): Promise<AusenciaRemota[]> {
+  const data = await apiFetch<{ ausencias: AusenciaRemota[] }>("/api/ausencias")
+  return data.ausencias ?? []
+}
+
+export async function criarAusencia(ausencia: AusenciaRemota): Promise<AusenciaRemota> {
+  return apiFetch<AusenciaRemota>("/api/ausencias", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(ausencia),
+  })
+}
+
+export async function deletarAusencia(id: string): Promise<void> {
+  await apiFetch<{ ok: boolean }>(`/api/ausencias/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  })
+}
+
+export async function fetchServidoresConfig(): Promise<ServidorConfigRemoto[]> {
+  const data = await apiFetch<{ servidores: ServidorConfigRemoto[] }>("/api/servidores-config")
+  return data.servidores ?? []
+}
+
+export async function upsertServidorConfig(nome: string, cor: string): Promise<void> {
+  await apiFetch<{ ok: boolean }>(`/api/servidores-config/${encodeURIComponent(nome)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ cor }),
+  })
+}
+
+export async function deletarServidorConfig(nome: string): Promise<void> {
+  await apiFetch<{ ok: boolean }>(`/api/servidores-config/${encodeURIComponent(nome)}`, {
+    method: "DELETE",
+  })
+}
+
 export async function fetchAppSettings(): Promise<AppSettings> {
   return apiFetch<AppSettings>("/api/configuracoes")
+}
+
+export async function fetchRocketChatNotifications(): Promise<RocketChatNotifications> {
+  return apiFetch<RocketChatNotifications>("/api/rocketchat/notificacoes", undefined, {
+    timeoutMs: 6000,
+  })
 }
 
 export async function saveAppSettings(
@@ -678,7 +982,8 @@ export async function salvarPreenchimentoDocumento(
         contaConta: options.contaConta ?? "",
         vpd: options.vpd ?? "",
       }),
-    }
+    },
+    { timeoutMs: SAVE_PREENCHIMENTO_TIMEOUT_MS }
   )
 }
 

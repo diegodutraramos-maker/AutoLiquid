@@ -9,6 +9,14 @@ interface DateFieldsProps {
   compact?: boolean;
 }
 
+/** Máscara dd/mm/aaaa — mantém apenas dígitos e insere barras automaticamente */
+function maskDate(raw: string): string {
+  const digits = raw.replace(/\D/g, "").slice(0, 8);
+  if (digits.length <= 2) return digits;
+  if (digits.length <= 4) return `${digits.slice(0, 2)}/${digits.slice(2)}`;
+  return `${digits.slice(0, 2)}/${digits.slice(2, 4)}/${digits.slice(4)}`;
+}
+
 export function DateFields({ dates, onDatesChange, compact = false }: DateFieldsProps) {
   return (
     <GlassCard className={compact ? "p-4" : "p-6"}>
@@ -19,20 +27,24 @@ export function DateFields({ dates, onDatesChange, compact = false }: DateFields
         <GlassInput
           label="Vencimento / Pagamento"
           type="text"
+          inputMode="numeric"
           value={dates.vencimento}
           onChange={(e) =>
-            onDatesChange?.({ ...dates, vencimento: e.target.value })
+            onDatesChange?.({ ...dates, vencimento: maskDate(e.target.value) })
           }
           placeholder="DD/MM/AAAA"
+          maxLength={10}
         />
         <GlassInput
           label="Data de Apuração"
           type="text"
+          inputMode="numeric"
           value={dates.apuracao}
           onChange={(e) =>
-            onDatesChange?.({ ...dates, apuracao: e.target.value })
+            onDatesChange?.({ ...dates, apuracao: maskDate(e.target.value) })
           }
           placeholder="DD/MM/AAAA"
+          maxLength={10}
         />
       </div>
     </GlassCard>

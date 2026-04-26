@@ -11,6 +11,7 @@ import { LogExecucaoPanel } from "@/components/log-execucao-panel";
 import { StatusOverview } from "@/components/status-overview";
 import { TabelasModal } from "@/components/tabelas-modal";
 import { ConfiguracoesModal } from "@/components/configuracoes-modal";
+import { WelcomeScreen } from "@/components/welcome-screen";
 import { GlassButton } from "@/components/glass-card";
 import { Input } from "@/components/ui/input";
 import {
@@ -73,6 +74,7 @@ function ConferenciaPageContent() {
   const [statusMensagem, setStatusMensagem] = useState("");
   const [chromeStatus, setChromeStatus] = useState<"pronto" | "carregando" | "erro">("carregando");
   const [browserName, setBrowserName] = useState("Chrome");
+  const [nomeUsuario, setNomeUsuario] = useState<string | null>(null);
   const [pendencias, setPendencias] = useState<PendenciaDocumento[]>([]);
   const [statusGeral, setStatusGeral] = useState<StatusGeralDocumento>({
     tipo: "atencao",
@@ -204,6 +206,7 @@ function ConferenciaPageContent() {
 
             if (settingsResult.status === "fulfilled" && ativo) {
               setBrowserName(settingsResult.value.navegador === "edge" ? "Edge" : "Chrome");
+              setNomeUsuario(settingsResult.value.nomeUsuario || "");
             }
           } finally {
             recarregandoDocumento = false;
@@ -256,6 +259,7 @@ function ConferenciaPageContent() {
 
       if (settingsResult.status === "fulfilled" && ativo) {
         setBrowserName(settingsResult.value.navegador === "edge" ? "Edge" : "Chrome");
+        setNomeUsuario(settingsResult.value.nomeUsuario || "");
       }
     };
 
@@ -1064,6 +1068,9 @@ function ConferenciaPageContent() {
           if (saved?.navegador) {
             setBrowserName(saved.navegador === "edge" ? "Edge" : "Chrome");
           }
+          if (saved?.nomeUsuario !== undefined) {
+            setNomeUsuario(saved.nomeUsuario || "");
+          }
         }}
         onChromeOpened={async () => {
           try {
@@ -1073,12 +1080,12 @@ function ConferenciaPageContent() {
             setChromeStatus("erro");
           }
         }}
-        onOpenDatas={() => {
-          setTabelasInitialTab("datas-impostos");
-          setTabelasVisibleTabs(["datas-impostos"]);
-          setIsTabelasOpen(true);
-        }}
       />
+
+      {/* Tela de boas-vindas — aparece apenas na primeira abertura */}
+      {nomeUsuario === "" && (
+        <WelcomeScreen onConcluido={(nome) => setNomeUsuario(nome)} />
+      )}
     </div>
   );
 }

@@ -7,10 +7,13 @@ Resultados bem-sucedidos ficam em cache de memória (TTL 1 h).
 """
 from __future__ import annotations
 
+import logging
 import time
 import threading
 
 import requests
+
+log = logging.getLogger(__name__)
 
 _TIMEOUT = 4   # segundos — BrasilAPI costuma responder em <1 s
 _URL = "https://brasilapi.com.br/api/cnpj/v1/{}"
@@ -83,14 +86,14 @@ def obter_dados_empresa(cnpj_limpo: str) -> dict:
     # 1. Cache em memória
     cached = _cache_get(cnpj_limpo)
     if cached is not None:
-        print(f"  CNPJ {cnpj_limpo}: cache hit — Simples={cached['optante_simples']}")
+        log.debug("CNPJ %s: cache hit — Simples=%s", cnpj_limpo, cached["optante_simples"])
         return cached
 
     # 2. BrasilAPI
     dados = _consultar_brasilapi(cnpj_limpo)
 
     if dados.get("nao_encontrado"):
-        print(f"  CNPJ {cnpj_limpo}: não encontrado na BrasilAPI.")
+        log.debug("CNPJ %s: não encontrado na BrasilAPI", cnpj_limpo)
         return dados
 
     simples = dados.get("optante_simples")
@@ -98,9 +101,9 @@ def obter_dados_empresa(cnpj_limpo: str) -> dict:
 
     if simples is not None:
         _cache_set(cnpj_limpo, dados)
-        print(f"  CNPJ {cnpj_limpo}: {razao} — Simples={simples}")
+        log.debug("CNPJ %s: %s — Simples=%s", cnpj_limpo, razao, simples)
     else:
-        print(f"  CNPJ {cnpj_limpo}: {razao} — Simples=indisponível na BrasilAPI")
+        log.debug("CNPJ %s: %s — Simples=indisponível na BrasilAPI", cnpj_limpo, razao)
 
     return dados
 

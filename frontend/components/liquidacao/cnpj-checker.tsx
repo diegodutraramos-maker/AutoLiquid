@@ -18,12 +18,12 @@ function mascaraCnpj(v: string) {
 interface SimplesResult {
   razaoSocial: string;
   optanteSimples: boolean | null;
-  fonte?: string; // "cache" | "historico" | "historico_expirado" | "api"
+  fonte?: string; // "cache" | "api"
 }
 
 type Estado =
   | { tipo: "idle" }
-  | { tipo: "loading"; mensagem: string }
+  | { tipo: "loading" }
   | { tipo: "resultado"; data: SimplesResult }
   | { tipo: "erro"; mensagem: string };
 
@@ -62,10 +62,7 @@ export function CnpjChecker() {
       retryTimerRef.current = null;
     }
 
-    setEstado({
-      tipo: "loading",
-      mensagem: isAutoRetry ? "Verificando novamente…" : "Consultando…",
-    });
+    setEstado({ tipo: "loading" });
 
     try {
       const data = await chamarApi(limpo);
@@ -73,7 +70,7 @@ export function CnpjChecker() {
 
       setEstado({ tipo: "resultado", data });
 
-      // Se o backend ainda não conseguiu o status do Simples, agenda 1 auto-retry
+      // BrasilAPI às vezes não retorna optante_simples — agenda 1 auto-retry após 2 s
       if (data.optanteSimples === null && !isAutoRetry) {
         retryTimerRef.current = setTimeout(() => {
           void consultar(limpo, true);
@@ -90,20 +87,11 @@ export function CnpjChecker() {
     }
   };
 
-  const simplesLabel = (data: SimplesResult) => {
-    const expirado = data.fonte === "historico_expirado";
-    if (data.optanteSimples === true)
-      return {
-        text: expirado ? "Simples Nacional *" : "Simples Nacional",
-        cls: "bg-emerald-500/10 text-emerald-700 ring-emerald-500/20",
-        expirado,
-      };
-    if (data.optanteSimples === false)
-      return {
-        text: expirado ? "Não optante *" : "Não optante",
-        cls: "bg-secondary/60 text-muted-foreground ring-glass-border",
-        expirado,
-      };
+  const simplesLabel = (optante: boolean | null) => {
+    if (optante === true)
+      return { text: "Simples Nacional", cls: "bg-emerald-500/10 text-emerald-700 ring-emerald-500/20" };
+    if (optante === false)
+      return { text: "Não optante", cls: "bg-secondary/60 text-muted-foreground ring-glass-border" };
     return null;
   };
 
@@ -139,12 +127,8 @@ export function CnpjChecker() {
           disabled={carregando}
           className="shrink-0"
         >
-          {carregando
-            ? <Loader2 className="h-4 w-4 animate-spin" />
-            : <Search className="h-4 w-4" />}
-          {carregando
-            ? (estado.tipo === "loading" ? estado.mensagem : "Consultando…")
-            : "Consultar"}
+          {carregando ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+          {carregando ? "Consultando…" : "Consultar"}
         </GlassButton>
       </div>
 
@@ -159,14 +143,10 @@ export function CnpjChecker() {
           </span>
 
           {estado.data.optanteSimples !== null ? (
-            /* Badge definitivo */
             (() => {
-              const lbl = simplesLabel(estado.data);
+              const lbl = simplesLabel(estado.data.optanteSimples);
               return lbl ? (
-                <span
-                  title={lbl.expirado ? "Dado com mais de 30 dias — re-verificar" : undefined}
-                  className={`shrink-0 rounded-full px-2.5 py-0.5 text-[11px] font-semibold ring-1 ring-inset ${lbl.cls} ${lbl.expirado ? "opacity-70" : ""}`}
-                >
+                <span className={`shrink-0 rounded-full px-2.5 py-0.5 text-[11px] font-semibold ring-1 ring-inset ${lbl.cls}`}>
                   {lbl.text}
                 </span>
               ) : null;
@@ -186,28 +166,13 @@ export function CnpjChecker() {
         estado.data.optanteSimples === null &&
         !retryTimerRef.current && (
           <p className="mt-1.5 text-[11px] text-muted-foreground">
-            Status não identificado nas fontes externas.{" "}
+            Status Simples não identificado.{" "}
             <button
               type="button"
               onClick={() => void consultar()}
               className="underline underline-offset-2 hover:text-foreground transition-colors"
             >
               Tentar novamente
-            </button>
-          </p>
-        )}
-
-      {/* Aviso de dado expirado (>30 dias) */}
-      {estado.tipo === "resultado" &&
-        estado.data.fonte === "historico_expirado" && (
-          <p className="mt-1.5 text-[11px] text-amber-600/80">
-            * Dado com mais de 30 dias — APIs externas indisponíveis no momento.{" "}
-            <button
-              type="button"
-              onClick={() => void consultar()}
-              className="underline underline-offset-2 hover:text-amber-700 transition-colors"
-            >
-              Atualizar
             </button>
           </p>
         )}

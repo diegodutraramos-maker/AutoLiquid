@@ -1,14 +1,17 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+from pathlib import Path
+
 from PyInstaller.utils.hooks import collect_data_files, collect_submodules, copy_metadata
 
 
 datas = [
     ('configuracoes.json', '.'),
     ('tabelas_config.json', '.'),
-    ('DCF - CONTRATOS.csv', '.'),
     ('src-tauri/tauri.conf.json', 'src-tauri'),
 ]
+if Path('DCF - CONTRATOS.csv').exists():
+    datas.append(('DCF - CONTRATOS.csv', '.'))
 datas += collect_data_files('playwright', include_py_files=True)
 datas += copy_metadata('fastapi')
 datas += copy_metadata('uvicorn')
